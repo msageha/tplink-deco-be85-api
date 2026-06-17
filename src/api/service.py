@@ -2,8 +2,8 @@ import asyncio
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from ..config import Settings
-from ..deco import DecoClient
+from config import Settings
+from deco import DecoClient
 
 T = TypeVar("T")
 
