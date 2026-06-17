@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..deco import decode_name
+from deco import decode_name
 
 
 class _Lenient(BaseModel):

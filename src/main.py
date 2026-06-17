@@ -3,10 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .api import router
-from .api.service import DecoService
-from .config import get_settings
-from .deco import DecoAuthError, DecoConnectionError, DecoError
+from api import router
+from api.service import DecoService
+from config import get_settings
+from deco import DecoAuthError, DecoConnectionError, DecoError
 
 
 @asynccontextmanager

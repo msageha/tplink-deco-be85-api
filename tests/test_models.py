@@ -3,7 +3,7 @@ from base64 import b64decode
 import pytest
 from pydantic import ValidationError
 
-from decoapi.api.schemas import (
+from api.schemas import (
     Operation,
     RawRequest,
     WifiBand,

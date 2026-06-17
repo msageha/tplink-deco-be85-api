@@ -3,7 +3,7 @@ from binascii import a2b_hex
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
-from decoapi.deco import DecoEncryption
+from deco import DecoEncryption
 
 
 def test_aes_round_trip():
