@@ -3,6 +3,8 @@ name = "deco-be85-api"
 version = "0.1.0"
 description = "FastAPI wrapper around the TP-Link Deco BE85 local API"
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
