@@ -30,4 +30,4 @@ USER appuser
 EXPOSE 8000
 
 # Credentials are supplied at runtime (e.g. --env-file .env or -e USERNAME=... -e PASSWORD=...).
-CMD ["uvicorn", "decoapi.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

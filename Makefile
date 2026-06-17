@@ -12,7 +12,7 @@ setup-env:
 	fi
 
 up-dev:
-	uv run uvicorn decoapi.main:app --reload --app-dir src --host 127.0.0.1 --port 8000
+	uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000
 
 test:
 	uv run pytest
