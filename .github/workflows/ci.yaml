@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint (ruff + ty)
+  pre-commit:
+    name: Pre-commit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -27,14 +27,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-extras --dev
 
-      - name: Ruff format check
-        run: uv run ruff format --check .
-
-      - name: Ruff lint
-        run: uv run ruff check .
-
-      - name: Type check (ty)
-        run: uv run ty check .
+      # Runs ruff-format, ruff, the file-hygiene hooks and ty (see
+      # .pre-commit-config.yaml). hadolint stays on the manual stage.
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files
 
   test:
     name: Test
