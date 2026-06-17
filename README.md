@@ -199,15 +199,15 @@ make smoke                 # 実機への疎通スモーク（読み取りのみ
 
 ## CI（GitHub Actions）
 
-`.github/workflows/` に 2 つのワークフロー（PR・main push・手動で起動）:
+`.github/workflows/ci.yaml`（PR・main push・手動で起動）に 2 ジョブ:
 
-- `ci.yaml` … `lint`ジョブ（`ruff format --check` + `ruff check` + `ty check`）と
-  `test`ジョブ（`uv sync --locked --all-extras --dev` → `pytest`）
-- `pre-commit.yaml` … `pre-commit run --all-files`（標準フック + ruff/ruff-format。
-  ty は CI lint と重複するため `SKIP=ty`）
+- `Pre-commit` … `uv run pre-commit run --all-files`
+  （ruff-format + ruff + ファイル衛生フック + ty を一括）
+- `Test` … `uv sync --locked --all-extras --dev` → `pytest`
 
-uv は `astral-sh/setup-uv` で導入、Action は SHA ピン留め。依存更新は
-`.github/dependabot.yml`（github-actions / uv を weekly）。
+ruff / ファイル衛生 / ty は pre-commit に集約しているため、CI とローカル
+（`make precommit`）で同じチェックが走ります。uv は `astral-sh/setup-uv` で導入、
+Action は SHA ピン留め。依存更新は `.github/dependabot.yml`（github-actions / uv を weekly）。
 
 ## 注意
 
