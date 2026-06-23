@@ -49,3 +49,9 @@ async def _deco_handler(_: Request, exc: DecoError) -> JSONResponse:
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
     return {"name": "deco-be85-api", "docs": "/docs"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
