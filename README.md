@@ -261,10 +261,25 @@ workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョン
 ### GitHub リポジトリ設定
 
 ファイルとして管理できないリポジトリ設定です。public リポジトリなので ruleset と secret scanning が使えます。
-required checks は `ci.yaml` の job 名 (`prek` / `gitleaks` / `verify`) に合わせます。
+main には現在 classic branch protection (PR 必須・required checks・linear history・conversation resolution) が
+設定されています。CI の job 名を変えたら required checks を `ci.yaml` の job 名 (`prek` / `gitleaks` / `verify`)
+に追従させます (旧名の check は報告されなくなり、merge が BLOCKED のままになる)。ruleset へ移行する場合は、
+二重に評価されないよう先に classic branch protection を外します。
 
 ```bash
 REPO=msageha/tplink-deco-be85-api
+
+# classic branch protection の required checks を ci.yaml の job 名に合わせる
+gh api -X PATCH "repos/$REPO/branches/main/protection/required_status_checks" --input - <<'JSON'
+{
+  "strict": true,
+  "checks": [
+    {"context": "prek", "app_id": 15368},
+    {"context": "gitleaks", "app_id": 15368},
+    {"context": "verify", "app_id": 15368}
+  ]
+}
+JSON
 
 # merge 方式: squash のみ / squash タイトルは COMMIT_OR_PR_TITLE /
 # merge 後にブランチ自動削除 / wiki off
@@ -280,6 +295,7 @@ gh api -X PATCH "repos/$REPO" --input - <<'JSON'
 }
 JSON
 
+# ruleset へ移行する場合 (classic branch protection を外したあと):
 # main を PR 必須・CI green 必須・squash merge 限定・force push / 削除禁止・linear history にする
 gh api -X POST "repos/$REPO/rulesets" --input - <<'JSON'
 {
