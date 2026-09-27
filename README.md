@@ -1,16 +1,33 @@
 # Deco BE85 API
 
+[![CI](https://github.com/msageha/tplink-deco-be85-api/actions/workflows/ci.yaml/badge.svg?event=pull_request)](https://github.com/msageha/tplink-deco-be85-api/actions/workflows/ci.yaml)
+
 TP-Link Deco BE85 のローカル Web API (Deco アプリが内部で叩いている API) を
 FastAPI + Pydantic でラップした REST サーバーです。ステータス取得や Wi-Fi の
 ON/OFF などをローカルネットワークから操作できます。
 
 ## セットアップ
 
+このリポジトリは [mise](https://mise.jdx.dev/) の利用を前提としています。
+
 ```bash
-make setup   # uv sync + (.env が無ければ) .env.example をコピー
+mise trust    # 初回のみ: このディレクトリの mise.toml を信頼する
+mise install  # ツールをインストールし、uv sync と git hooks のセットアップを行う
 ```
 
-`.env` に認証情報を記載します。
+`mise install` を実行すると `[hooks] postinstall` により `uv sync --locked` (依存関係を `.venv` に入れる) と
+`prek install` (`.git/hooks/pre-commit` と `.git/hooks/commit-msg` の登録) が自動実行されます。
+`.pre-commit-config.yaml` の hook 構成が変わったあとの既存 clone では `mise exec -- prek install` を再実行してください。
+
+以前 `uv run pre-commit install` で hook を登録していた clone では、`mise exec -- prek install --force` で
+旧 hook を置き換えてください。置き換えないと prek が旧 hook (`.git/hooks/pre-commit.legacy`) も実行し、
+`uv sync` で削除された pre-commit package を呼んで commit が失敗します。
+
+認証情報はリポジトリ直下の `.env` に記載します。`.env.example` をコピーして編集してください。
+
+```bash
+cp .env.example .env
+```
 
 ```dotenv
 PASSWORD=<Deco 管理パスワード (TP-Link ID のパスワード)>
@@ -24,7 +41,7 @@ TIMEOUT=30
 ## 起動
 
 ```bash
-make run   # uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000
+mise run dev   # = uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000
 ```
 
 - Swagger UI: http://127.0.0.1:8000/docs
@@ -35,8 +52,8 @@ make run   # uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --p
 ### Docker
 
 ```bash
-make build-image   # docker build -t deco-be85-api:latest .
-make run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:latest
+mise run build-image   # docker build -t deco-be85-api:latest .
+mise run run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:latest
 ```
 
 多段ビルド (`uv` ビルダ → `python:slim` ランナー、非 root 実行)。認証情報は
@@ -44,48 +61,48 @@ make run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:
 
 ## エンドポイント
 
-| Method | Path                         | 説明                                        |
-| ------ | ---------------------------- | ------------------------------------------- |
-| GET    | `/api/health`                | サーバー状態とログイン状況                  |
-| POST   | `/api/login`                 | 明示ログイン                                |
-| POST   | `/api/logout`                | ログアウト                                  |
-| GET    | `/api/dashboard`             | 概況 (回線 / CPU / メモリ / Deco 台数 / 接続数) |
-| GET    | `/api/devices`               | Deco ユニット (メッシュノード) 一覧         |
-| GET    | `/api/clients`               | 接続クライアント一覧 (`?online_only=true`)  |
-| GET    | `/api/clients/blocked`       | ブロック中クライアント一覧                  |
-| GET    | `/api/network/wan`           | WAN IPv4 ステータス                         |
-| GET    | `/api/network/internet`      | インターネット接続情報 (IPv4 / IPv6)        |
-| GET    | `/api/network/lan`           | LAN / DHCP DNS / WAN IP                     |
-| GET    | `/api/network/ipv6`          | IPv6 有効状態                               |
-| GET    | `/api/network/performance`   | CPU / メモリ使用率                          |
-| GET    | `/api/network/mac-clone`     | MAC クローン設定                            |
-| GET    | `/api/network/wan-mode`      | WAN ポートの動作モード                      |
-| GET    | `/api/network/dhcp-dial`     | WAN の DHCP 接続設定 (unicast)              |
-| GET    | `/api/network/igmp`          | IGMP (マルチキャスト) 設定                  |
-| GET    | `/api/network/fast-xmit`     | fast xmit の有効状態                        |
-| GET    | `/api/network/vlan`          | VLAN (IPTV) 設定                            |
-| GET    | `/api/network/ddns`          | DDNS の有効状態とドメイン                   |
-| GET    | `/api/wireless`              | Wi-Fi 設定の取得                            |
-| POST   | `/api/wireless`              | バンド別 Wi-Fi の ON/OFF                    |
-| POST   | `/api/wireless/config`       | Wi-Fi 設定変更 (SSID / パスワード / enable 等) |
-| GET    | `/api/wireless/power`        | 電波 (DFS サポート等)                       |
-| GET    | `/api/wireless/beamforming`  | beamforming の有効状態                      |
-| GET    | `/api/wireless/operation-mode` | 無線の動作モード (AP / router)            |
-| GET    | `/api/wireless/bridge`       | ブリッジ / PLC 状態                         |
-| GET    | `/api/wireless/roaming`      | 802.11r 高速ローミングの有効状態           |
-| GET    | `/api/wireless/bandwidth`    | 160MHz 幅 (HT160) の有効状態               |
-| GET    | `/api/device/mode`           | 動作モード (region / workmode / sysmode)    |
-| GET    | `/api/device/time`           | 時刻・タイムゾーン設定                      |
-| GET    | `/api/device/speedtest`      | 直近のスピードテスト結果                    |
-| GET    | `/api/cloud/device-info`     | クラウド連携情報 (model / role 等)          |
-| GET    | `/api/cloud/login-status`    | TP-Link ID のログイン状態                   |
-| GET    | `/api/system/component-info` | ERP / 省電力等のコンポーネント情報          |
-| GET    | `/api/system/switch-list`    | UI 機能スイッチ                             |
-| GET    | `/api/system/log-types`      | ログ種別 (`/api/system/log` の `level`)     |
-| GET    | `/api/system/log`            | システムログ (`?level=&index=&limit=`)      |
-| GET    | `/api/system/firmware`       | ファームウェア更新の有無 (cloud に問い合わせ) |
-| POST   | `/api/reboot`                | Deco の再起動 (`confirm=true` 必須)         |
-| POST   | `/api/raw`                   | 任意エンドポイントへの汎用パススルー        |
+| Method | Path                           | 説明                                            |
+| ------ | ------------------------------ | ----------------------------------------------- |
+| GET    | `/api/health`                  | サーバー状態とログイン状況                      |
+| POST   | `/api/login`                   | 明示ログイン                                    |
+| POST   | `/api/logout`                  | ログアウト                                      |
+| GET    | `/api/dashboard`               | 概況 (回線 / CPU / メモリ / Deco 台数 / 接続数) |
+| GET    | `/api/devices`                 | Deco ユニット (メッシュノード) 一覧             |
+| GET    | `/api/clients`                 | 接続クライアント一覧 (`?online_only=true`)      |
+| GET    | `/api/clients/blocked`         | ブロック中クライアント一覧                      |
+| GET    | `/api/network/wan`             | WAN IPv4 ステータス                             |
+| GET    | `/api/network/internet`        | インターネット接続情報 (IPv4 / IPv6)            |
+| GET    | `/api/network/lan`             | LAN / DHCP DNS / WAN IP                         |
+| GET    | `/api/network/ipv6`            | IPv6 有効状態                                   |
+| GET    | `/api/network/performance`     | CPU / メモリ使用率                              |
+| GET    | `/api/network/mac-clone`       | MAC クローン設定                                |
+| GET    | `/api/network/wan-mode`        | WAN ポートの動作モード                          |
+| GET    | `/api/network/dhcp-dial`       | WAN の DHCP 接続設定 (unicast)                  |
+| GET    | `/api/network/igmp`            | IGMP (マルチキャスト) 設定                      |
+| GET    | `/api/network/fast-xmit`       | fast xmit の有効状態                            |
+| GET    | `/api/network/vlan`            | VLAN (IPTV) 設定                                |
+| GET    | `/api/network/ddns`            | DDNS の有効状態とドメイン                       |
+| GET    | `/api/wireless`                | Wi-Fi 設定の取得                                |
+| POST   | `/api/wireless`                | バンド別 Wi-Fi の ON/OFF                        |
+| POST   | `/api/wireless/config`         | Wi-Fi 設定変更 (SSID / パスワード / enable 等)  |
+| GET    | `/api/wireless/power`          | 電波 (DFS サポート等)                           |
+| GET    | `/api/wireless/beamforming`    | beamforming の有効状態                          |
+| GET    | `/api/wireless/operation-mode` | 無線の動作モード (AP / router)                  |
+| GET    | `/api/wireless/bridge`         | ブリッジ / PLC 状態                             |
+| GET    | `/api/wireless/roaming`        | 802.11r 高速ローミングの有効状態                |
+| GET    | `/api/wireless/bandwidth`      | 160MHz 幅 (HT160) の有効状態                    |
+| GET    | `/api/device/mode`             | 動作モード (region / workmode / sysmode)        |
+| GET    | `/api/device/time`             | 時刻・タイムゾーン設定                          |
+| GET    | `/api/device/speedtest`        | 直近のスピードテスト結果                        |
+| GET    | `/api/cloud/device-info`       | クラウド連携情報 (model / role 等)              |
+| GET    | `/api/cloud/login-status`      | TP-Link ID のログイン状態                       |
+| GET    | `/api/system/component-info`   | ERP / 省電力等のコンポーネント情報              |
+| GET    | `/api/system/switch-list`      | UI 機能スイッチ                                 |
+| GET    | `/api/system/log-types`        | ログ種別 (`/api/system/log` の `level`)         |
+| GET    | `/api/system/log`              | システムログ (`?level=&index=&limit=`)          |
+| GET    | `/api/system/firmware`         | ファームウェア更新の有無 (cloud に問い合わせ)   |
+| POST   | `/api/reboot`                  | Deco の再起動 (`confirm=true` 必須)             |
+| POST   | `/api/raw`                     | 任意エンドポイントへの汎用パススルー            |
 
 モデル (`DecoNode` 等) を定義している endpoint 以外は、ルーターの応答をそのまま返します
 (フィールドはファームウェアで異なりうる)。モデル化した endpoint も主要フィールドだけを定義し、
@@ -93,12 +110,12 @@ make run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:
 
 ### エラー
 
-| Status    | 意味                                                                 |
-| --------- | -------------------------------------------------------------------- |
+| Status    | 意味                                                                  |
+| --------- | --------------------------------------------------------------------- |
 | 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等) |
-| 401       | ルーターへのログイン失敗 (`DecoAuthError`)                           |
-| 502       | ルーターがエラーを返した (`detail` と `error_code`)                  |
-| 504       | ルーターに到達できない (`DecoConnectionError`)                       |
+| 401       | ルーターへのログイン失敗 (`DecoAuthError`)                            |
+| 502       | ルーターがエラーを返した (`detail` と `error_code`)                   |
+| 504       | ルーターに到達できない (`DecoConnectionError`)                        |
 
 ### Wi-Fi トグル例
 
@@ -174,24 +191,164 @@ curl -X POST http://127.0.0.1:8000/api/reboot \
 
 ## 開発
 
+Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、ty (型チェック)、pytest です。
+それ以外のツールは `mise.toml` の `[tools]` で exact version に pin し、`mise.lock` でプラットフォームごとの
+URL / checksum を固定しています。CI (`ci.yaml`) もローカルも同じ `mise.lock` からツールを解決するため、
+同じ検証をローカルで再現できます。タスクの一覧は末尾の「[タスク](#タスク)」を参照してください。
+
 ```bash
-make lint     # ruff format --check + ruff check + ty check
-make format   # ruff format
-make test     # coverage run -m pytest + coverage report
-uv run pre-commit install   # commit 時に同じチェックを走らせる
+mise run format                          # ruff format .
+mise run lint                            # ruff format --check + ruff check + ty check
+mise run test                            # coverage run -m pytest + report (オフライン。実機には触れません)
+mise exec -- prek run --all-files        # pre-commit hooks を全ファイルに対して実行する (CI の prek job と同じ)
+mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシークレットスキャン (CI の gitleaks job と同じ)
 ```
 
-ruff / ty の設定は `pyproject.toml`。バージョンは `uv.lock` で一元管理し、pre-commit は
-`uv run` 経由の local hook で同じバージョンを使います。
+- [prek](https://github.com/j178/prek): pre-commit hook の実行基盤。hooks は `.pre-commit-config.yaml` で定義します。
+  ruff / ty の hook は `uv run --locked` で動かし、バージョンは `uv.lock` に一元化しています。
+- [dprint](https://dprint.dev/): json / markdown / toml / yaml のフォーマッタ (`dprint-fmt` hook)。
+  plugin の WASM URL は `dprint.json` に `url@sha256` の checksum 付きで pin します。`uv.lock` / `mise.lock` は対象外。
+- [actionlint](https://github.com/rhysd/actionlint): workflow の静的検査 (`actionlint-system` hook)。
+  `run:` スクリプトの検査に [shellcheck](https://github.com/koalaman/shellcheck) を使います。actionlint は PATH に
+  shellcheck が無いとその検査を黙って省くため、ローカルと CI で結果が変わらないように mise で pin しています。
+- [hadolint](https://github.com/hadolint/hadolint): `Dockerfile` の静的検査 (`hadolint` hook)。
+- [gitleaks](https://github.com/gitleaks/gitleaks): シークレットスキャン。pre-commit hook (`gitleaks` hook) が
+  staged 差分を、CI の `gitleaks` job がコミット履歴全体を対象にします。
+- [commitlint](https://commitlint.js.org/): commit message を
+  [Conventional Commits](https://www.conventionalcommits.org/) で検査する commit-msg hook (`commitlint` hook)。
+  ルールは `commitlint.config.mjs`。prek が node を自前で用意するため、リポジトリに node は不要です。
+- [fnox](https://fnox.jdx.dev/): secret manager。`fnox.toml` の `[daemon]` は解決済みの secret をメモリに
+  キャッシュする daemon を有効化し、`idle_timeout` (12h) 無操作で終了させる設定です。
 
-## CI (GitHub Actions)
+`.gitignore` はホワイトリスト方式 (`*` で全て無視し、`!` で許可したものだけを追跡する) です。
+新しく追跡したいファイルを追加する場合は、対応する `!` の行を追記してください。
 
-`.github/workflows/ci.yaml` (PR・main push・手動で起動) に 2 ジョブ:
+### mise.toml / mise.lock を手で変更するとき
 
-- `Pre-commit` … `uv run pre-commit run --all-files` (ファイル衛生 + ruff + ty)
-- `Test` … `uv run pytest`
+`mise.toml` の `[tools]` を手で変更したら `mise lock` を実行して `mise.lock` を追従させ、両方を同じ commit に
+含めます。CI の mise-action は `mise.lock` があると `mise install --locked` でインストールするため、`mise.lock` が
+古いままだと CI の各 job で失敗します。
 
-Action は SHA ピン留め。依存更新は `.github/dependabot.yml` (github-actions / uv を weekly)。
+### 依存関係の更新 (Renovate)
+
+`renovate.json` で以下を Renovate に任せています。
+
+- `pyproject.toml` の依存バージョンと `uv.lock` の更新、`uv.lock` の週次再解決 (`lockFileMaintenance`)。
+- `mise.toml` のバージョン bump と、それに伴う `mise.lock` の更新 (同じ PR で行われる)。
+- `.pre-commit-config.yaml` の hook `rev` と、`language: node` の hook の `additional_dependencies`。
+- workflow の `uses:` の commit SHA (バージョンはコメントで併記し、Renovate が両方を更新する)。
+- `dprint.json` の plugin URL と checksum (`customManagers`)。
+
+`Dockerfile` の Python は Renovate の対象外です (tag の一部だけを `ARG PYTHON_VERSION` で変数にしているため、dockerfile manager が
+置換位置を特定できない)。更新は `ARG PYTHON_VERSION` を手で書き換えます (ビルダとランナーの両イメージが同じ値を参照する)。
+
+major 以外の更新は 1 つの PR に集約します。このうち minor / patch は `minimumReleaseAge` (7 日) 経過後、
+CI green を条件に Renovate 自身が自動マージします (`platformAutomerge: false`)。major は個別 PR で人手レビューします。
+
+### CI
+
+`.github/workflows/ci.yaml` は pull request 時に以下の job を並列実行します。job 名がそのまま
+required status check の名前になります。
+
+- `prek`: `mise.lock` 通りのツールで `.pre-commit-config.yaml` の全 hook を `prek run --all-files` で実行します。
+  ruff / ty の hook は `uv run --locked` で動くため、`uv.lock` と `pyproject.toml` の不整合もここで失敗します。
+- `gitleaks`: コミット履歴全体を対象にシークレットスキャンを行います。
+- `verify`: `uv run --locked pytest` でテストを実行します。
+
+main への push では実行しません (main は PR 必須で、変更は PR の CI で検証してから merge されます)。
+workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョンをコメントで併記します。
+
+### GitHub リポジトリ設定
+
+ファイルとして管理できないリポジトリ設定です。public リポジトリなので ruleset と secret scanning が使えます。
+main には現在 classic branch protection (PR 必須・required checks・linear history・conversation resolution) が
+設定されています。CI の job 名を変えたら required checks を `ci.yaml` の job 名 (`prek` / `gitleaks` / `verify`)
+に追従させます (旧名の check は報告されなくなり、merge が BLOCKED のままになる)。ruleset へ移行する場合は、
+二重に評価されないよう先に classic branch protection を外します。
+
+```bash
+REPO=msageha/tplink-deco-be85-api
+
+# classic branch protection の required checks を ci.yaml の job 名に合わせる
+gh api -X PATCH "repos/$REPO/branches/main/protection/required_status_checks" --input - <<'JSON'
+{
+  "strict": true,
+  "checks": [
+    {"context": "prek", "app_id": 15368},
+    {"context": "gitleaks", "app_id": 15368},
+    {"context": "verify", "app_id": 15368}
+  ]
+}
+JSON
+
+# merge 方式: squash のみ / squash タイトルは COMMIT_OR_PR_TITLE /
+# merge 後にブランチ自動削除 / wiki off
+gh api -X PATCH "repos/$REPO" --input - <<'JSON'
+{
+  "allow_merge_commit": false,
+  "allow_rebase_merge": false,
+  "allow_squash_merge": true,
+  "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+  "squash_merge_commit_message": "COMMIT_MESSAGES",
+  "delete_branch_on_merge": true,
+  "has_wiki": false
+}
+JSON
+
+# ruleset へ移行する場合 (classic branch protection を外したあと):
+# main を PR 必須・CI green 必須・squash merge 限定・force push / 削除禁止・linear history にする
+gh api -X POST "repos/$REPO/rulesets" --input - <<'JSON'
+{
+  "name": "Protect main",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {"type": "required_linear_history"},
+    {"type": "pull_request", "parameters": {
+      "required_approving_review_count": 0,
+      "dismiss_stale_reviews_on_push": false,
+      "require_code_owner_review": false,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": false,
+      "allowed_merge_methods": ["squash"]
+    }},
+    {"type": "required_status_checks", "parameters": {
+      "do_not_enforce_on_create": false,
+      "strict_required_status_checks_policy": false,
+      "required_status_checks": [
+        {"context": "prek", "integration_id": 15368},
+        {"context": "gitleaks", "integration_id": 15368},
+        {"context": "verify", "integration_id": 15368}
+      ]
+    }}
+  ]
+}
+JSON
+
+# secret scanning: push protection に加え、non-provider patterns も有効化する
+gh api -X PATCH "repos/$REPO" --input - <<'JSON'
+{
+  "security_and_analysis": {
+    "secret_scanning": {"status": "enabled"},
+    "secret_scanning_push_protection": {"status": "enabled"},
+    "secret_scanning_non_provider_patterns": {"status": "enabled"}
+  }
+}
+JSON
+```
+
+### template との同期
+
+共通ファイル (workflow・hook 設定・Renovate 設定・dprint 設定等) は
+[dope-corp/template](https://github.com/dope-corp/template) から取り込んでいます。`mise run template-diff` で
+template の main と比較して unified diff を表示します。差分にはこのリポジトリ固有の変更 (Python 向け hook・
+`verify` job・issue form の `labels:` 等) も混ざるので、取り込むものは手で選んでください。
+template の `claude.yaml` / `claude-sweep.yaml` (GitHub 上で Claude Code を動かす workflow) は、
+このリポジトリでは使わないため取り込んでいません。
 
 ## 仕組み
 
@@ -250,18 +407,18 @@ nat / iptv / vpn / security / eco_mode / iot_device / speedtest など機能が�
 
 **read で取得できるが公開していない form** (機微・重複・空応答):
 
-| form | op | 理由 |
-| --- | --- | --- |
-| `cloud_account?form=get_token` | read | cloud トークンを返す |
-| `cloud_account?form=user_login` | read | TP-Link ID の資格情報フィールド |
-| `administration?form=account` / `recovery` | read | 管理パスワード (RSA 暗号) を含む |
-| `cloud?form=manager` | get | 管理権限プロファイル |
-| `cloud?form=message` | read | cloud レポート通知の履歴 |
-| `cloud_account?form=check_*` / `cloud_upgrade` | read | cloud 状態。`/api/cloud/login-status` と `/api/system/firmware` で足りる |
-| `client?form=client_access` | read | `/api/clients` と重複 |
-| `network?form=lan_ipv4` | read | `/api/network/lan` と重複 |
-| `network?form=erp_setting` / `wifi_network` | read | この機種では `{}` |
-| `log_export?form=save_log` / `system?form=envar` | - | multipart 前提で JSON envelope では HTTP 500 |
+| form                                             | op   | 理由                                                                     |
+| ------------------------------------------------ | ---- | ------------------------------------------------------------------------ |
+| `cloud_account?form=get_token`                   | read | cloud トークンを返す                                                     |
+| `cloud_account?form=user_login`                  | read | TP-Link ID の資格情報フィールド                                          |
+| `administration?form=account` / `recovery`       | read | 管理パスワード (RSA 暗号) を含む                                         |
+| `cloud?form=manager`                             | get  | 管理権限プロファイル                                                     |
+| `cloud?form=message`                             | read | cloud レポート通知の履歴                                                 |
+| `cloud_account?form=check_*` / `cloud_upgrade`   | read | cloud 状態。`/api/cloud/login-status` と `/api/system/firmware` で足りる |
+| `client?form=client_access`                      | read | `/api/clients` と重複                                                    |
+| `network?form=lan_ipv4`                          | read | `/api/network/lan` と重複                                                |
+| `network?form=erp_setting` / `wifi_network`      | read | この機種では `{}`                                                        |
+| `log_export?form=save_log` / `system?form=envar` | -    | multipart 前提で JSON envelope では HTTP 500                             |
 
 **write / operate を使う form** (read だけでは `no such callback` になる operation を持つ)。
 実装済み: `system?form=logout` (`/api/logout`)、`device?form=system` の `operation:reboot`
@@ -333,3 +490,66 @@ Deco の公開されていないローカル API をリバースエンジニア�
 ## ライセンス / License
 
 [GPL-3.0-or-later](LICENSE)。上記の参考実装が GPL-3.0 であることに合わせています。
+
+## タスク
+
+タスクは `mise run <task>` で実行します。`mise.toml` の `[tasks]` を変更した場合は
+`mise run docs` を実行し、以下の一覧を更新してください (pre-commit hook からも自動実行されます)。
+
+<!-- dprint-ignore-start -->
+<!-- mise-tasks -->
+## `build-image`
+
+- **Usage:** `build-image`
+
+Build the Docker image deco-be85-api:latest
+
+## `clean`
+
+- **Usage:** `clean`
+
+Remove caches and coverage artifacts
+
+## `dev`
+
+- **Usage:** `dev`
+
+Run the API server with auto-reload on http://127.0.0.1:8000
+
+## `docs`
+
+- **Usage:** `docs`
+
+Sync the task list embedded in README.md with mise.toml
+
+## `format`
+
+- **Usage:** `format`
+
+Format python sources with ruff
+
+## `lint`
+
+- **Usage:** `lint`
+
+Check formatting (ruff format --check), lint (ruff check) and types (ty check)
+
+## `run-image`
+
+- **Usage:** `run-image`
+
+Run the Docker image on port 8000 with .env passed via --env-file
+
+## `template-diff`
+
+- **Usage:** `template-diff`
+
+Diff shared files against dope-corp/template main
+
+## `test`
+
+- **Usage:** `test`
+
+Run pytest under coverage and print the report
+<!-- /mise-tasks -->
+<!-- dprint-ignore-end -->

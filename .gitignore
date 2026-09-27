@@ -1,20 +1,51 @@
-# --- OS / editor ---
+# ホワイトリスト方式: すべて無視し、`!` で許可したものだけを追跡する
+*
+
+!/.github/
+!/.github/**/
+!/.github/CODEOWNERS
+!/.github/PULL_REQUEST_TEMPLATE.md
+!/.github/ISSUE_TEMPLATE/config.yml
+!/.github/ISSUE_TEMPLATE/bug_report.yaml
+!/.github/ISSUE_TEMPLATE/feature_request.yaml
+!/.github/workflows/ci.yaml
+
+!/.gitignore
+!/.gitattributes
+!/.editorconfig
+!/README.md
+!/CLAUDE.md
+!/LICENSE
+!/mise.toml
+!/mise.lock
+!/fnox.toml
+!/.pre-commit-config.yaml
+!/commitlint.config.mjs
+!/dprint.json
+!/renovate.json
+
+!/pyproject.toml
+!/uv.lock
+!/Dockerfile
+!/.dockerignore
+!/src/
+!/src/**
+!/tests/
+!/tests/**
+
+# `!/src/**` `!/tests/**` で広く許可した配下にも secret・生成物・editor artifact は入れない
+# (ホワイトリスト化前の .gitignore と同じパターン)
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 .idea/
 .vscode/
-
-# --- Env / secrets ---
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 *key.json
-
-# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -23,13 +54,9 @@ build/
 dist/
 *.egg-info/
 *.egg
-
-# Virtualenvs
 .venv/
 venv/
 env/
-
-# Tooling caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -38,15 +65,12 @@ env/
 .coverage.*
 htmlcov/
 coverage.xml
-
-# --- Logs / local artifacts ---
 *.log
 tmp/
 .tmp/
 *.bak
-
-# uv.lock IS committed; only its caches are ignored.
-
-# Claude Code local-only settings
 CLAUDE.local.md
 .claude/settings.local.json
+
+# 上の `.env.*` に当たるため、許可はその後に置く
+!/.env.example
