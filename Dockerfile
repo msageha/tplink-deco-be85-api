@@ -24,7 +24,8 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     DECO_HOST=http://172.16.1.1
 
-USER appuser
+# hadolint DL3066: 数値 UID にすると実行環境側が非 root を検証できる (useradd の --uid と同じ値)
+USER 10001
 EXPOSE 8000
 
 # 認証情報は実行時に渡す (--env-file .env または -e PASSWORD=...)。
