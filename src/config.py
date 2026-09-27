@@ -26,6 +26,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    # username/password are populated from the environment / .env by
-    # pydantic-settings; the static checker can't see that.
-    return Settings()  # ty: ignore[missing-argument]
+    return Settings()
