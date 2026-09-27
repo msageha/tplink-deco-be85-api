@@ -64,14 +64,21 @@ make run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:
 | GET    | `/api/network/igmp`          | IGMP (マルチキャスト) 設定                  |
 | GET    | `/api/network/fast-xmit`     | fast xmit の有効状態                        |
 | GET    | `/api/network/vlan`          | VLAN (IPTV) 設定                            |
+| GET    | `/api/network/ddns`          | DDNS の有効状態とドメイン                   |
 | GET    | `/api/wireless`              | Wi-Fi 設定の取得                            |
 | POST   | `/api/wireless`              | バンド別 Wi-Fi の ON/OFF                    |
 | POST   | `/api/wireless/config`       | Wi-Fi 設定変更 (SSID / パスワード / enable 等) |
 | GET    | `/api/wireless/power`        | 電波 (DFS サポート等)                       |
 | GET    | `/api/wireless/beamforming`  | beamforming の有効状態                      |
+| GET    | `/api/wireless/operation-mode` | 無線の動作モード (AP / router)            |
+| GET    | `/api/wireless/bridge`       | ブリッジ / PLC 状態                         |
+| GET    | `/api/wireless/roaming`      | 802.11r 高速ローミングの有効状態           |
+| GET    | `/api/wireless/bandwidth`    | 160MHz 幅 (HT160) の有効状態               |
 | GET    | `/api/device/mode`           | 動作モード (region / workmode / sysmode)    |
 | GET    | `/api/device/time`           | 時刻・タイムゾーン設定                      |
+| GET    | `/api/device/speedtest`      | 直近のスピードテスト結果                    |
 | GET    | `/api/cloud/device-info`     | クラウド連携情報 (model / role 等)          |
+| GET    | `/api/cloud/login-status`    | TP-Link ID のログイン状態                   |
 | GET    | `/api/system/component-info` | ERP / 省電力等のコンポーネント情報          |
 | GET    | `/api/system/switch-list`    | UI 機能スイッチ                             |
 | GET    | `/api/system/log-types`      | ログ種別 (`/api/system/log` の `level`)     |
@@ -220,25 +227,47 @@ sequenceDiagram
 暗号化は `src/deco/crypto.py` (`SessionCipher`)、ログイン / 通信は
 `src/deco/client.py` (`DecoClient`) にあります。
 
-### 実機で確認した luci form (BE85 / FW 1.2.4)
+### 実機で確認した luci form (BE85 / FW 1.2.4 を静的解析)
 
-luci に登録されている admin モジュールは `administration` / `client` / `cloud` / `cloud_account` /
-`component_control` / `device` / `log_export` / `network` / `system` / `web` / `wireless` の 11 個で、
-`firmware` / `qos` / `parental_control` / `dhcps` / `led` などは HTTP 404 (Web UI が参照する
-`admin/firmware?form=config` や `admin/isp?form=isp_upgrade` も含む)。存在しない form は
-HTTP 200 で `{"error_code": 1, "msg": "no such callback"}` または
-`{"success": false, "errorcode": "..."}` (モジュールにより形が異なる) を返すので、form の有無はこれで判別できる。
+TP-Link 配布の FW 1.2.4 イメージ (実機と同一ビルド) を展開し、luci controller
+(`/usr/lib/lua/luci/controller/*.lua`、Lua 5.1 bytecode) の定数から form 名を抽出したうえで、
+実機に read / list / get を投げて到達性を確認した (write 系 op は投げていない)。
 
-読み取れることを確認したが API にしていない form:
+**HTTP で到達できる module**: `admin/` 配下は `administration` / `client` / `cloud` /
+`cloud_account` / `component_control` / `device` / `log_export` / `network` / `system` /
+`web` / `wireless` の 11 個。トップレベルは `login` / `locale` / `domain_login` (read では触れない
+`blocking` / `mcu_upgrade` も存在)。`firmware` / `qos` / `parental_control` / `dhcp` / `nat` /
+`iptv` / `vpn_server` などの module は HTTP 404 で、この機種の luci には登録されていない。存在しない
+form は HTTP 200 + `{"error_code": 1, "msg": "no such callback"}` または
+`{"success": false, "errorcode": "..."}` を返すので、form の有無はこれで判別できる。
 
-| form | 理由 |
-| --- | --- |
-| `admin/cloud_account?form=get_token` | cloud のトークンを返すため公開しない |
-| `admin/administration?form=account` | 管理アカウント変更用の form。read も公開しない |
-| `admin/cloud_account?form=check_internet` | `{"success": true}` のみ。`/api/network/internet` で足りる |
-| `admin/client?form=traffic_stat` (`operation:list`) | `client_list_speed` の up / down speed で `/api/clients` と重複 |
-| `admin/network?form=erp_setting`・`wifi_network` | この機種では `{}` を返す |
-| `admin/log_export?form=save_log`・`admin/system?form=envar` | multipart 前提で JSON envelope では HTTP 500 |
+**mobile_app controller は HTTP 表面に無い**: `controller/admin/mobile_app/*.lua` (35 本。dhcp /
+nat / iptv / vpn / security / eco_mode / iot_device / speedtest など機能が揃う) は
+`admin/mobile_app/<name>?form=...` を含むどの URL でも 404。dispatcher の index は controller を
+深さ 2 まで (`*.lua` と `*/*.lua`) しか登録せず、これらは深さ 3 のため露出しない。`discover.lua` が
+`require` して呼ぶ作りで、Deco アプリは luci HTTP ではなく TDP (LAN の UDP) や cloud 経由で到達する。
+この wrapper が使う luci HTTP API の対象外。
+
+**read で取得できるが公開していない form** (機微・重複・空応答):
+
+| form | op | 理由 |
+| --- | --- | --- |
+| `cloud_account?form=get_token` | read | cloud トークンを返す |
+| `cloud_account?form=user_login` | read | TP-Link ID の資格情報フィールド |
+| `administration?form=account` / `recovery` | read | 管理パスワード (RSA 暗号) を含む |
+| `cloud?form=manager` | get | 管理権限プロファイル |
+| `cloud?form=message` | read | cloud レポート通知の履歴 |
+| `cloud_account?form=check_*` / `cloud_upgrade` | read | cloud 状態。`/api/cloud/login-status` と `/api/system/firmware` で足りる |
+| `client?form=client_access` | read | `/api/clients` と重複 |
+| `network?form=lan_ipv4` | read | `/api/network/lan` と重複 |
+| `network?form=erp_setting` / `wifi_network` | read | この機種では `{}` |
+| `log_export?form=save_log` / `system?form=envar` | - | multipart 前提で JSON envelope では HTTP 500 |
+
+**write / operate を使う form** (read だけでは `no such callback` になる operation を持つ)。
+実装済み: `system?form=logout` (`/api/logout`)、`device?form=system` の `operation:reboot`
+(`/api/reboot`)、`wireless?form=wlan` の write (`/api/wireless`・`/api/wireless/config`。read は
+`/api/wireless`)。未実装: `client?form=black_list` の add / remove、`cloud?form=firmware` /
+`firmware_status` の download / upgrade、各 setting form の write など。
 
 ## 構成
 

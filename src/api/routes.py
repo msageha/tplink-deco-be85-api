@@ -13,6 +13,7 @@ from .models import (
     Performance,
     RawRequest,
     RebootRequest,
+    SpeedTest,
     TimeSettings,
     WirelessConfigUpdate,
     WirelessPower,
@@ -164,6 +165,12 @@ async def network_vlan(service: Service) -> dict[str, Any]:
     return await service.run(service.client.get_vlan)
 
 
+@router.get("/network/ddns", tags=["network"])
+async def network_ddns(service: Service) -> dict[str, Any]:
+    """DDNS の有効状態とドメイン。"""
+    return await service.run(service.client.get_ddns)
+
+
 @router.get("/wireless", tags=["wireless"])
 async def wireless_get(service: Service) -> dict[str, Any]:
     """Wi-Fi 設定 (band ごとに host / guest)。ssid / password は base64 のまま返す。"""
@@ -209,6 +216,30 @@ async def wireless_beamforming(service: Service) -> dict[str, Any]:
     return await service.run(service.client.get_beamforming)
 
 
+@router.get("/wireless/operation-mode", tags=["wireless"])
+async def wireless_operation_mode(service: Service) -> dict[str, Any]:
+    """無線の動作モード (AP / router など)。"""
+    return await service.run(service.client.get_operation_mode)
+
+
+@router.get("/wireless/bridge", tags=["wireless"])
+async def wireless_bridge(service: Service) -> dict[str, Any]:
+    """ブリッジ / PLC の状態。"""
+    return await service.run(service.client.get_bridge)
+
+
+@router.get("/wireless/roaming", tags=["wireless"])
+async def wireless_roaming(service: Service) -> dict[str, Any]:
+    """802.11r 高速ローミングの有効状態。"""
+    return await service.run(service.client.get_fast_roaming)
+
+
+@router.get("/wireless/bandwidth", tags=["wireless"])
+async def wireless_bandwidth(service: Service) -> dict[str, Any]:
+    """160MHz 幅 (HT160) の有効状態。"""
+    return await service.run(service.client.get_bandwidth)
+
+
 @router.get("/device/mode", tags=["device"])
 async def device_mode(service: Service) -> DeviceMode:
     """動作モード (region / workmode / sysmode)。"""
@@ -223,11 +254,24 @@ async def device_time(service: Service) -> TimeSettings:
     return TimeSettings.model_validate(raw)
 
 
+@router.get("/device/speedtest", tags=["device"])
+async def device_speedtest(service: Service) -> SpeedTest:
+    """直近のスピードテスト結果 (計測は行わない)。"""
+    raw = await service.run(service.client.get_speedtest_result)
+    return SpeedTest.model_validate(raw)
+
+
 @router.get("/cloud/device-info", tags=["cloud"])
 async def cloud_device_info(service: Service) -> CloudDeviceInfo:
     """クラウド連携情報 (model / role など)。"""
     raw = await service.run(service.client.get_cloud_device_info)
     return CloudDeviceInfo.model_validate(raw)
+
+
+@router.get("/cloud/login-status", tags=["cloud"])
+async def cloud_login_status(service: Service) -> dict[str, Any]:
+    """TP-Link ID (クラウド) のログイン状態。"""
+    return await service.run(service.client.get_cloud_login_status)
 
 
 @router.get("/system/component-info", tags=["system"])
