@@ -1,6 +1,6 @@
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .models import (
     ClientDevice,
@@ -8,6 +8,7 @@ from .models import (
     DashboardSummary,
     DecoNode,
     DeviceMode,
+    FirmwareStatus,
     MacClone,
     Performance,
     RawRequest,
@@ -133,6 +134,36 @@ async def network_mac_clone(service: Service) -> MacClone:
     return MacClone.model_validate(raw)
 
 
+@router.get("/network/wan-mode", tags=["network"])
+async def network_wan_mode(service: Service) -> dict[str, Any]:
+    """WAN ポートの動作モード。"""
+    return await service.run(service.client.get_wan_mode)
+
+
+@router.get("/network/dhcp-dial", tags=["network"])
+async def network_dhcp_dial(service: Service) -> dict[str, Any]:
+    """WAN の DHCP 接続設定 (unicast など)。"""
+    return await service.run(service.client.get_dhcp_dial)
+
+
+@router.get("/network/igmp", tags=["network"])
+async def network_igmp(service: Service) -> dict[str, Any]:
+    """IGMP (マルチキャスト) 設定。"""
+    return await service.run(service.client.get_igmp_setting)
+
+
+@router.get("/network/fast-xmit", tags=["network"])
+async def network_fast_xmit(service: Service) -> dict[str, Any]:
+    """fast xmit (高速転送) の有効状態。"""
+    return await service.run(service.client.get_fast_xmit_setting)
+
+
+@router.get("/network/vlan", tags=["network"])
+async def network_vlan(service: Service) -> dict[str, Any]:
+    """VLAN (IPTV) 設定。"""
+    return await service.run(service.client.get_vlan)
+
+
 @router.get("/wireless", tags=["wireless"])
 async def wireless_get(service: Service) -> dict[str, Any]:
     """Wi-Fi 設定 (band ごとに host / guest)。ssid / password は base64 のまま返す。"""
@@ -172,6 +203,12 @@ async def wireless_power(service: Service) -> WirelessPower:
     return WirelessPower.model_validate(raw)
 
 
+@router.get("/wireless/beamforming", tags=["wireless"])
+async def wireless_beamforming(service: Service) -> dict[str, Any]:
+    """beamforming の有効状態。"""
+    return await service.run(service.client.get_beamforming)
+
+
 @router.get("/device/mode", tags=["device"])
 async def device_mode(service: Service) -> DeviceMode:
     """動作モード (region / workmode / sysmode)。"""
@@ -209,6 +246,28 @@ async def system_switch_list(service: Service) -> dict[str, Any]:
 async def system_log_types(service: Service) -> Any:
     """エクスポート可能なログ種別。"""
     return await service.run(service.client.get_log_types)
+
+
+@router.get("/system/log", tags=["system"])
+async def system_log(
+    service: Service,
+    level: Annotated[int, Query(ge=1, le=8)] = 8,
+    index: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1)] = 100,
+) -> dict[str, Any]:
+    """システムログを 1 ページ分取得する。
+
+    level は /system/log-types の value (8 = ALL)。index は 0 始まりのページ番号、limit は
+    1 ページの件数で、応答の totalNum はその limit での総ページ数。
+    """
+    return await service.run(service.client.get_system_log, level, index, limit)
+
+
+@router.get("/system/firmware", tags=["system"])
+async def system_firmware(service: Service) -> list[FirmwareStatus]:
+    """各ノードにファームウェア更新があるかを TP-Link cloud に問い合わせる (数秒かかる)。"""
+    raw = await service.run(service.client.check_firmware)
+    return [FirmwareStatus.model_validate(f) for f in raw]
 
 
 @router.post("/reboot", tags=["system"])

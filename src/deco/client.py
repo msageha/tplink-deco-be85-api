@@ -118,9 +118,16 @@ class DecoClient:
             "login?form=login", data=cipher.encrypt(json.dumps(body), login=True)
         )
         try:
-            stok = _decrypt_envelope(cipher, resp.json())["result"]["stok"]
-        except (ValueError, KeyError, TypeError, AttributeError) as err:
-            raise DecoAuthError(f"Login failed (check PASSWORD): {resp.text}") from err
+            envelope = _decrypt_envelope(cipher, resp.json())
+        except (ValueError, AttributeError) as err:
+            raise DecoAuthError(
+                f"Unexpected login response: {resp.text[:200]}"
+            ) from err
+        try:
+            stok = envelope["result"]["stok"]
+        except (KeyError, TypeError) as err:
+            # パスワード不一致は error_code -5002 と failureCount / attemptsAllowed で返る。
+            raise DecoAuthError(f"Login failed (check PASSWORD): {envelope}") from err
         match = _SYSAUTH_RE.search(resp.headers.get("set-cookie", ""))
         if match is None:
             raise DecoAuthError("Login succeeded but no sysauth cookie was returned")
@@ -228,6 +235,21 @@ class DecoClient:
     def get_mac_clone(self) -> dict[str, Any]:
         return self._read("admin/network?form=mac_clone")
 
+    def get_wan_mode(self) -> dict[str, Any]:
+        return self._read("admin/network?form=wan_mode")
+
+    def get_dhcp_dial(self) -> dict[str, Any]:
+        return self._read("admin/network?form=dhcp_dial")
+
+    def get_igmp_setting(self) -> dict[str, Any]:
+        return self._read("admin/network?form=igmp_setting")
+
+    def get_fast_xmit_setting(self) -> dict[str, Any]:
+        return self._read("admin/network?form=fast_xmit_setting")
+
+    def get_vlan(self) -> dict[str, Any]:
+        return self._read("admin/network?form=vlan")
+
     def get_wlan(self) -> dict[str, Any]:
         return self._read("admin/wireless?form=wlan")
 
@@ -249,6 +271,9 @@ class DecoClient:
     def get_wireless_power(self) -> dict[str, Any]:
         return self._read("admin/wireless?form=power")
 
+    def get_beamforming(self) -> dict[str, Any]:
+        return self._read("admin/wireless?form=beamforming")
+
     def get_mode(self) -> dict[str, Any]:
         return self._read("admin/device?form=mode")
 
@@ -266,6 +291,23 @@ class DecoClient:
 
     def get_log_types(self) -> Any:
         return self.request("admin/log_export?form=types")
+
+    def get_system_log(self, level: int, index: int, limit: int) -> dict[str, Any]:
+        """システムログを 1 ページ分取得する。
+
+        build でルーター側に level (get_log_types の value。8 = ALL) で絞ったスナップショットを
+        作らせてから read する。index は 0 始まりのページ番号、limit は 1 ページの件数で、
+        応答の totalNum はその limit での総ページ数。
+        """
+        self.request("admin/log_export?form=feedback_log", "build", {"level": level})
+        return self._read(
+            "admin/log_export?form=feedback_log", {"index": index, "limit": limit}
+        )
+
+    def check_firmware(self) -> list[dict[str, Any]]:
+        """TP-Link cloud に各ノードの最新ファームウェアを問い合わせる (数秒かかる)。"""
+        result = self.request("admin/cloud?form=firmware_status", "check") or {}
+        return _decode_names(result.get("fw_list", []), "new_version")
 
     def reboot(self, macs: list[str]) -> Any:
         return self.request(
