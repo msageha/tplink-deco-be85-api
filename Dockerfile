@@ -7,14 +7,12 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
 WORKDIR /app
-# Virtual project: sync installs only the dependencies into /app/.venv
-# (the project itself is not packaged; its source is added to the runner below).
+# package = false の virtual project なので依存だけが /app/.venv に入る。ソースは runner 側で COPY する。
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runner
 
-# Run as a non-root user.
 RUN useradd --create-home --uid 10001 appuser
 
 WORKDIR /app
@@ -29,5 +27,5 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 USER appuser
 EXPOSE 8000
 
-# Credentials are supplied at runtime (e.g. --env-file .env or -e USERNAME=... -e PASSWORD=...).
+# 認証情報は実行時に渡す (--env-file .env または -e PASSWORD=...)。
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

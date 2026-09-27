@@ -7,6 +7,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -15,6 +18,7 @@ jobs:
   pre-commit:
     name: Pre-commit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,16 +29,15 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --all-extras --dev
+        run: uv sync --locked
 
-      # Runs ruff-format, ruff, the file-hygiene hooks and ty (see
-      # .pre-commit-config.yaml). hadolint stays on the manual stage.
       - name: Run pre-commit
         run: uv run pre-commit run --all-files
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,7 +48,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --all-extras --dev
+        run: uv sync --locked
 
       - name: Run tests
         run: uv run pytest
