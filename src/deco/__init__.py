@@ -1,17 +1,6 @@
-"""Standalone client for the TP-Link Deco local (luci) API.
+"""TP-Link Deco ローカル API クライアント。FastAPI 層には依存しない。"""
 
-This subpackage is independent of the FastAPI layer and can be used on its own.
-"""
-
-from .client import DecoClient, decode_name
-from .crypto import DecoEncryption
+from .client import DecoClient
 from .exceptions import DecoAuthError, DecoConnectionError, DecoError
 
-__all__ = [
-    "DecoClient",
-    "DecoEncryption",
-    "DecoError",
-    "DecoAuthError",
-    "DecoConnectionError",
-    "decode_name",
-]
+__all__ = ["DecoAuthError", "DecoClient", "DecoConnectionError", "DecoError"]
