@@ -30,6 +30,8 @@ class Operation(StrEnum):
     edit = "edit"
     remove = "remove"
     operate = "operate"
+    check = "check"
+    build = "build"
 
 
 class _RouterResponse(BaseModel):
@@ -109,6 +111,34 @@ class MacClone(_RouterResponse):
 
 class WirelessPower(_RouterResponse):
     support_dfs: bool | None = Field(default=None, description="DFS 対応か")
+
+
+class SpeedTest(_RouterResponse):
+    down_speed: int | None = Field(
+        default=None, description="下り速度 (ルーター報告値)"
+    )
+    up_speed: int | None = Field(default=None, description="上り速度 (ルーター報告値)")
+    last_speed_test_time: int | None = Field(
+        default=None, description="最後に計測した Unix 時刻"
+    )
+    ever_tested: bool | None = Field(default=None, description="一度でも計測したか")
+    status: str | None = Field(default=None, description="計測状態 (例: idle)")
+
+
+class FirmwareStatus(_RouterResponse):
+    mac: str | None = Field(default=None, description="ノードの MAC アドレス")
+    device_model: str | None = Field(default=None, description="機種名 (例: BE85)")
+    software_ver: str | None = Field(
+        default=None, description="現在のファームウェアバージョン"
+    )
+    new_version: str | None = Field(
+        default=None, description="最新のファームウェアバージョン (平文にデコード済み)"
+    )
+    need_to_upgrade: bool | None = Field(default=None, description="更新があるか")
+    need_force_upgrade: bool | None = Field(
+        default=None, description="強制更新の対象か"
+    )
+    release_date: str | None = Field(default=None, description="最新版のリリース日")
 
 
 class CloudDeviceInfo(_RouterResponse):

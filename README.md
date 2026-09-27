@@ -59,22 +59,37 @@ make run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:
 | GET    | `/api/network/ipv6`          | IPv6 有効状態                               |
 | GET    | `/api/network/performance`   | CPU / メモリ使用率                          |
 | GET    | `/api/network/mac-clone`     | MAC クローン設定                            |
+| GET    | `/api/network/wan-mode`      | WAN ポートの動作モード                      |
+| GET    | `/api/network/dhcp-dial`     | WAN の DHCP 接続設定 (unicast)              |
+| GET    | `/api/network/igmp`          | IGMP (マルチキャスト) 設定                  |
+| GET    | `/api/network/fast-xmit`     | fast xmit の有効状態                        |
+| GET    | `/api/network/vlan`          | VLAN (IPTV) 設定                            |
+| GET    | `/api/network/ddns`          | DDNS の有効状態とドメイン                   |
 | GET    | `/api/wireless`              | Wi-Fi 設定の取得                            |
 | POST   | `/api/wireless`              | バンド別 Wi-Fi の ON/OFF                    |
 | POST   | `/api/wireless/config`       | Wi-Fi 設定変更 (SSID / パスワード / enable 等) |
 | GET    | `/api/wireless/power`        | 電波 (DFS サポート等)                       |
+| GET    | `/api/wireless/beamforming`  | beamforming の有効状態                      |
+| GET    | `/api/wireless/operation-mode` | 無線の動作モード (AP / router)            |
+| GET    | `/api/wireless/bridge`       | ブリッジ / PLC 状態                         |
+| GET    | `/api/wireless/roaming`      | 802.11r 高速ローミングの有効状態           |
+| GET    | `/api/wireless/bandwidth`    | 160MHz 幅 (HT160) の有効状態               |
 | GET    | `/api/device/mode`           | 動作モード (region / workmode / sysmode)    |
 | GET    | `/api/device/time`           | 時刻・タイムゾーン設定                      |
+| GET    | `/api/device/speedtest`      | 直近のスピードテスト結果                    |
 | GET    | `/api/cloud/device-info`     | クラウド連携情報 (model / role 等)          |
+| GET    | `/api/cloud/login-status`    | TP-Link ID のログイン状態                   |
 | GET    | `/api/system/component-info` | ERP / 省電力等のコンポーネント情報          |
 | GET    | `/api/system/switch-list`    | UI 機能スイッチ                             |
-| GET    | `/api/system/log-types`      | エクスポート可能なログ種別                  |
+| GET    | `/api/system/log-types`      | ログ種別 (`/api/system/log` の `level`)     |
+| GET    | `/api/system/log`            | システムログ (`?level=&index=&limit=`)      |
+| GET    | `/api/system/firmware`       | ファームウェア更新の有無 (cloud に問い合わせ) |
 | POST   | `/api/reboot`                | Deco の再起動 (`confirm=true` 必須)         |
 | POST   | `/api/raw`                   | 任意エンドポイントへの汎用パススルー        |
 
-`/network/*`・`GET /wireless`・`/system/*`・`/raw` はルーターの応答をそのまま返します
-(フィールドはファームウェアで異なりうる)。それ以外は主要フィールドをモデルで定義しつつ、
-未知のフィールドも保持して返します (`extra="allow"`)。
+モデル (`DecoNode` 等) を定義している endpoint 以外は、ルーターの応答をそのまま返します
+(フィールドはファームウェアで異なりうる)。モデル化した endpoint も主要フィールドだけを定義し、
+未知のフィールドは保持して返します (`extra="allow"`)。
 
 ### エラー
 
@@ -113,6 +128,26 @@ curl -X POST http://127.0.0.1:8000/api/wireless/config \
 > 拒否 (`extra="forbid"`) し、最低 1 項目の指定が必須です。設定値は `GET /api/wireless` の構造
 > (`band.host` / `band.guest`) に対応します。
 
+### システムログ `/api/system/log`
+
+`admin/log_export?form=feedback_log` を `operation:build` → `operation:read` の順に呼びます
+(Web UI と同じ手順。build でルーター側に level で絞ったスナップショットを作らせる)。
+
+```bash
+curl 'http://127.0.0.1:8000/api/system/log?level=3&index=0&limit=100'
+```
+
+- `level`: `/api/system/log-types` の `value` (1 ALERT 〜 7 DEBUG、8 ALL。既定 8)。その重要度までを含む
+- `index`: 0 始まりのページ番号 (既定 0)
+- `limit`: 1 ページの件数 (既定 100)
+- 応答: `{"totalNum": <limit での総ページ数>, "currentIndex": <index>, "logList": [{"content": "..."}]}`
+
+### ファームウェア更新チェック `/api/system/firmware`
+
+`admin/cloud?form=firmware_status` の `operation:check` で TP-Link cloud に問い合わせ、ノードごとの
+`software_ver` / `new_version` / `need_to_upgrade` などを返します (数秒かかる)。更新の適用
+(`operation:download` / `upgrade`) は提供しません。
+
 ### 汎用パススルー `/api/raw`
 
 任意の Deco エンドポイントを直接叩けます。レスポンスは復号済みのエンベロープ全体
@@ -125,7 +160,7 @@ curl -X POST http://127.0.0.1:8000/api/raw \
 ```
 
 - `path`: `admin/<module>?form=<form>` 形式の相対パス (英数字と `_`、`/`、1 つの `?form=` のみ)
-- `operation`: `read` / `write` / `load` / `list` / `get` / `set` / `add` / `edit` / `remove` / `operate` (enum)
+- `operation`: `read` / `write` / `load` / `list` / `get` / `set` / `add` / `edit` / `remove` / `operate` / `check` / `build` (enum)
 - `params`: 任意の追加パラメータ (省略可)
 
 > `operation: write` と適切な `params` を渡すと設定を変更できる強力な口です。
@@ -191,6 +226,48 @@ sequenceDiagram
 
 暗号化は `src/deco/crypto.py` (`SessionCipher`)、ログイン / 通信は
 `src/deco/client.py` (`DecoClient`) にあります。
+
+### 実機で確認した luci form (BE85 / FW 1.2.4 を静的解析)
+
+TP-Link 配布の FW 1.2.4 イメージ (実機と同一ビルド) を展開し、luci controller
+(`/usr/lib/lua/luci/controller/*.lua`、Lua 5.1 bytecode) の定数から form 名を抽出したうえで、
+実機に read / list / get を投げて到達性を確認した (write 系 op は投げていない)。
+
+**HTTP で到達できる module**: `admin/` 配下は `administration` / `client` / `cloud` /
+`cloud_account` / `component_control` / `device` / `log_export` / `network` / `system` /
+`web` / `wireless` の 11 個。トップレベルは `login` / `locale` / `domain_login` (read では触れない
+`blocking` / `mcu_upgrade` も存在)。`firmware` / `qos` / `parental_control` / `dhcp` / `nat` /
+`iptv` / `vpn_server` などの module は HTTP 404 で、この機種の luci には登録されていない。存在しない
+form は HTTP 200 + `{"error_code": 1, "msg": "no such callback"}` または
+`{"success": false, "errorcode": "..."}` を返すので、form の有無はこれで判別できる。
+
+**mobile_app controller は HTTP 表面に無い**: `controller/admin/mobile_app/*.lua` (35 本。dhcp /
+nat / iptv / vpn / security / eco_mode / iot_device / speedtest など機能が揃う) は
+`admin/mobile_app/<name>?form=...` を含むどの URL でも 404。dispatcher の index は controller を
+深さ 2 まで (`*.lua` と `*/*.lua`) しか登録せず、これらは深さ 3 のため露出しない。`discover.lua` が
+`require` して呼ぶ作りで、Deco アプリは luci HTTP ではなく TDP (LAN の UDP) や cloud 経由で到達する。
+この wrapper が使う luci HTTP API の対象外。
+
+**read で取得できるが公開していない form** (機微・重複・空応答):
+
+| form | op | 理由 |
+| --- | --- | --- |
+| `cloud_account?form=get_token` | read | cloud トークンを返す |
+| `cloud_account?form=user_login` | read | TP-Link ID の資格情報フィールド |
+| `administration?form=account` / `recovery` | read | 管理パスワード (RSA 暗号) を含む |
+| `cloud?form=manager` | get | 管理権限プロファイル |
+| `cloud?form=message` | read | cloud レポート通知の履歴 |
+| `cloud_account?form=check_*` / `cloud_upgrade` | read | cloud 状態。`/api/cloud/login-status` と `/api/system/firmware` で足りる |
+| `client?form=client_access` | read | `/api/clients` と重複 |
+| `network?form=lan_ipv4` | read | `/api/network/lan` と重複 |
+| `network?form=erp_setting` / `wifi_network` | read | この機種では `{}` |
+| `log_export?form=save_log` / `system?form=envar` | - | multipart 前提で JSON envelope では HTTP 500 |
+
+**write / operate を使う form** (read だけでは `no such callback` になる operation を持つ)。
+実装済み: `system?form=logout` (`/api/logout`)、`device?form=system` の `operation:reboot`
+(`/api/reboot`)、`wireless?form=wlan` の write (`/api/wireless`・`/api/wireless/config`。read は
+`/api/wireless`)。未実装: `client?form=black_list` の add / remove、`cloud?form=firmware` /
+`firmware_status` の download / upgrade、各 setting form の write など。
 
 ## 構成
 
