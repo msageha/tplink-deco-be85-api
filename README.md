@@ -242,8 +242,9 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 `Dockerfile` の Python は Renovate の対象外です (tag の一部だけを `ARG PYTHON_VERSION` で変数にしているため、dockerfile manager が
 置換位置を特定できない)。更新は `ARG PYTHON_VERSION` を手で書き換えます (ビルダとランナーの両イメージが同じ値を参照する)。
 
-major 以外の更新は 1 つの PR に集約します。このうち minor / patch は `minimumReleaseAge` (7 日) 経過後、
-CI green を条件に Renovate 自身が自動マージします (`platformAutomerge: false`)。major は個別 PR で人手レビューします。
+更新 PR は毎週月曜 9 時前 (Asia/Tokyo) にまとめて作られます。major 以外の更新は 1 つの PR に集約します。このうち minor / patch は
+`minimumReleaseAge` (7 日) 経過後、required checks の成功を条件に GitHub の auto-merge で自動マージします
+(リポジトリの `allow_auto_merge` が必要)。major は個別 PR で人手レビューします。
 
 ### CI
 
@@ -282,7 +283,7 @@ gh api -X PATCH "repos/$REPO/branches/main/protection/required_status_checks" --
 JSON
 
 # merge 方式: squash のみ / squash タイトルは COMMIT_OR_PR_TITLE /
-# merge 後にブランチ自動削除 / wiki off
+# merge 後にブランチ自動削除 (Renovate の auto-merge に allow_auto_merge が必要) / wiki off
 gh api -X PATCH "repos/$REPO" --input - <<'JSON'
 {
   "allow_merge_commit": false,
@@ -291,6 +292,7 @@ gh api -X PATCH "repos/$REPO" --input - <<'JSON'
   "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
   "squash_merge_commit_message": "COMMIT_MESSAGES",
   "delete_branch_on_merge": true,
+  "allow_auto_merge": true,
   "has_wiki": false
 }
 JSON
