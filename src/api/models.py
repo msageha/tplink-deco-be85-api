@@ -1,5 +1,6 @@
 """API の request / response モデル。"""
 
+import json
 from enum import StrEnum
 from typing import Any, Self
 
@@ -84,8 +85,12 @@ class ClientDevice(_RouterResponse):
 
 
 class Performance(_RouterResponse):
-    cpu_usage: float | None = Field(default=None, description="CPU 使用率")
-    mem_usage: float | None = Field(default=None, description="メモリ使用率")
+    cpu_usage: float | None = Field(
+        default=None, allow_inf_nan=False, description="CPU 使用率"
+    )
+    mem_usage: float | None = Field(
+        default=None, allow_inf_nan=False, description="メモリ使用率"
+    )
 
 
 class DeviceMode(_RouterResponse):
@@ -151,14 +156,36 @@ class DashboardSummary(BaseModel):
     internet_online: bool = Field(description="WAN IPv4 アドレスを持っているか")
     connection_type: str | None = Field(description="WAN の接続方式 (例: dhcp)")
     wan_ipv4: str | None = Field(description="WAN IPv4 アドレス")
-    cpu_usage: float | None = Field(description="メイン Deco の CPU 使用率")
-    mem_usage: float | None = Field(description="メイン Deco のメモリ使用率")
+    cpu_usage: float | None = Field(
+        allow_inf_nan=False, description="メイン Deco の CPU 使用率"
+    )
+    mem_usage: float | None = Field(
+        allow_inf_nan=False, description="メイン Deco のメモリ使用率"
+    )
     deco_count: int = Field(description="Deco ノード数")
     online_clients: int = Field(description="オンラインのクライアント数")
     decos: list[DecoNode] = Field(description="Deco ノード一覧")
 
 
-class WlanBandToggle(BaseModel):
+class _Request(BaseModel):
+    """API への要求の本文。"""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_json_values(cls, data: Any) -> Any:
+        # JSON の構文は孤立した surrogate (U+D800 など) や NaN も通すが、前者は UTF-8 で表せず、
+        # 後者は JSON の値ではないので、ルーターへ送る前に拒否する。JSON の object でない本文は
+        # モデルの検証に任せる。
+        body: object = data
+        if isinstance(body, dict):
+            try:
+                json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
+            except ValueError as err:
+                raise ValueError("request must contain only JSON values") from err
+        return data
+
+
+class WlanBandToggle(_Request):
     band: WifiBand = Field(description="対象バンド")
     network: WifiNetwork = Field(
         default=WifiNetwork.host, description="host (通常) / guest (ゲスト)"
@@ -180,7 +207,7 @@ class WirelessSettings(BaseModel):
     mode: str | None = Field(default=None, description="無線モード")
 
 
-class WirelessConfigUpdate(BaseModel):
+class WirelessConfigUpdate(_Request):
     band: WifiBand = Field(description="対象バンド")
     network: WifiNetwork = Field(
         default=WifiNetwork.host, description="host (通常) / guest (ゲスト)"
@@ -194,14 +221,18 @@ class WirelessConfigUpdate(BaseModel):
         return self
 
 
-class RebootRequest(BaseModel):
-    confirm: bool = Field(description="誤操作防止。true のときだけ再起動する")
+class RebootRequest(_Request):
+    # 破壊的な操作の確認なので、"true" や 1 を true とみなす型変換を受け付けない。
+    confirm: bool = Field(
+        strict=True, description="誤操作防止。JSON の true のときだけ再起動する"
+    )
     macs: list[str] | None = Field(
-        default=None, description="再起動するノードの MAC。省略時は全ノード"
+        default=None,
+        description="再起動するノードの MAC。省略・null・空の配列なら全ノード",
     )
 
 
-class RawRequest(BaseModel):
+class RawRequest(_Request):
     """任意の Deco エンドポイントへのパススルー。"""
 
     path: str = Field(

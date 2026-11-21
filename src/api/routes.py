@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -20,6 +20,7 @@ from api.models import (
     WlanBandToggle,
 )
 from api.service import DecoService
+from deco import DecoError
 
 router = APIRouter(prefix="/api")
 
@@ -29,6 +30,20 @@ def _get_service(request: Request) -> DecoService:
 
 
 type Service = Annotated[DecoService, Depends(_get_service)]
+
+
+def _object(value: Any) -> dict[str, Any]:
+    """
+    ルーターの応答の入れ子の値を object として読む。無ければ空として扱う。
+
+    Raises:
+        DecoError: object でない (ルーターの不正な応答)。
+    """
+    if value is None or value == []:  # 空の Lua テーブルは [] でも返る
+        return {}
+    if not isinstance(value, dict):
+        raise DecoError("Deco returned an unexpected response: not a JSON object")
+    return cast("dict[str, Any]", value)
 
 
 @router.get("/health", tags=["system"])
@@ -59,9 +74,8 @@ async def dashboard(service: Service) -> DashboardSummary:
     decos = await service.run(service.client.get_device_list)
     clients = await service.run(service.client.get_client_list)
     performance = await service.run(service.client.get_performance)
-    wan: dict[str, Any] = (await service.run(service.client.get_wan)).get("wan") or {}
-    ip_info: dict[str, Any] = wan.get("ip_info") or {}
-    wan_ip = ip_info.get("ip")
+    wan = _object((await service.run(service.client.get_wan)).get("wan"))
+    wan_ip = _object(wan.get("ip_info")).get("ip")
     return DashboardSummary(
         internet_online=bool(wan_ip),
         connection_type=wan.get("dial_type"),
@@ -322,7 +336,14 @@ async def system_firmware(service: Service) -> list[FirmwareStatus]:
     return [FirmwareStatus.model_validate(f) for f in raw]
 
 
-@router.post("/reboot", tags=["system"])
+@router.post(
+    "/reboot",
+    tags=["system"],
+    responses={
+        400: {"description": "confirm が false"},
+        404: {"description": "再起動できる Deco が見つからない"},
+    },
+)
 async def reboot(*, body: RebootRequest, service: Service) -> dict[str, Any]:
     """Deco を再起動する。macs 省略時は全ノード。"""
     if not body.confirm:
@@ -333,6 +354,11 @@ async def reboot(*, body: RebootRequest, service: Service) -> dict[str, Any]:
     if not macs:
         decos = await service.run(service.client.get_device_list)
         macs = [d["mac"] for d in decos if d.get("mac")]
+        # ルーターの値の型を、再起動を指示する前に確かめる。
+        if not all(isinstance(mac, str) for mac in macs):
+            raise DecoError(
+                "Deco returned a device list with a MAC that is not a string"
+            )
     if not macs:
         raise HTTPException(status_code=404, detail="No Deco units found to reboot")
     await service.run(service.client.reboot, macs)

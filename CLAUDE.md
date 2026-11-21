@@ -6,7 +6,7 @@ endpoint 一覧・ログインフロー・実機で確認した luci form の挙
 ## セットアップと検証
 
 - `mise install`: ツールのインストール、`uv sync --locked`、git hooks (pre-commit / pre-push / commit-msg) のセットアップ。旧 pre-commit (`uv run pre-commit install`) の hook が残る clone では `mise exec -- prek install --force` で置き換える。
-- `mise run test`: coverage 付き pytest。オフラインで完結し、実機には触れない。
+- `mise run test`: coverage 付き pytest (xdist で並列)。オフラインで完結し、実機には触れない。
 - `mise run format`: リポジトリ全体の import の並べ替えと ruff format。commit 時の `ruff-isort` / `ruff-format` hook は commit するファイルだけを整形する。
 - `mise run lint`: ruff check / ruff format --check / lint-imports / ty check / pyright。pre-commit の `lint` hook も同じ task を呼ぶ。
 - `mise run pre-commit`: pre-commit stage の hook (dprint、actionlint、zizmor、hadolint、typos、ruff の整形 / lint、gitleaks 等) を全追跡ファイルに実行する。CI の `prek` job の `Run prek` step と同じ検証 (commit-msg stage の commitlint は含まない)。`test` hook は pre-push で `mise run test` を実行するが、push 前に自分でも `mise run test` を流す。
@@ -21,7 +21,7 @@ endpoint 一覧・ログインフロー・実機で確認した luci form の挙
 - `src/deco/`: Deco ローカル API クライアント (FastAPI 非依存)。`crypto.py` (AES / RSA 暗号化と署名)、`client.py` (ログイン・再ログイン・endpoint 呼び出し)、`exceptions.py`。
 - `src/api/`: FastAPI 層 (`routes.py` / `models.py` / `service.py`)。`service.py` が `DecoClient` を lock + worker thread で直列実行する。`src/main.py` が例外 → HTTP status の対応を持つ。
 - `src/settings.py`: 環境変数 (pydantic-settings)。`PASSWORD` / `DECO_HOST` / `ACCOUNT` / `VERIFY_SSL` / `TIMEOUT` の名前は Home Assistant 側の compose が依存しているので変えない。
-- `tests/`: `src` をミラーしたオフライン単体テスト。
+- `tests/`: 機能ごとの e2e テスト。xdist の worker ごとに `uvicorn main:app` を subprocess で起動し、luci のログインフローと暗号化を実装した fake の Deco (`tests/harness.py`) につなぐ。入力の全域で成り立つ契約は Hypothesis の property で書く。src の内部を直接 import・patch しない。
 - 層の依存は `pyproject.toml` の `[tool.importlinter]` が検査する。`deco` は `api`・`main`・`settings` に依存しない。`api` は `routes` → `models` / `service`、`deco` は `client` → `crypto` / `exceptions` の向きにだけ依存する。fastapi は `api`、Crypto は `deco.crypto`、requests は `deco.client` だけが直接 import できる。`api`・`deco` の直下にモジュールを足したら、`exhaustive = true` の契約の `layers` にも足す。
 
 ## 規約

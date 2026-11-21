@@ -2,7 +2,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from api import DecoService, router
 from deco import DecoAuthError, DecoClient, DecoConnectionError, DecoError
@@ -34,6 +37,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(
+    _: Request, exc: RequestValidationError
+) -> JSONResponse:
+    # 既定の応答は各エラーに入力値を付け、Wi-Fi のパスワードなどを平文で返してしまうので除く。
+    errors = [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
+@app.exception_handler(ValidationError)
+async def router_data_error_handler(_: Request, __: ValidationError) -> JSONResponse:
+    # endpoint の中で検証するモデルはルーターの応答のモデルなので、失敗はルーターの不正な応答。
+    # 例外の文字列には応答の値が入るので、detail には載せない。
+    return JSONResponse(
+        status_code=502,
+        content={"detail": "Deco returned an unexpected response", "error_code": None},
+    )
 
 
 @app.exception_handler(DecoError)

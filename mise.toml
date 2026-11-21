@@ -30,10 +30,23 @@ run = "fnox exec --only PASSWORD --if-missing error -- uv run uvicorn main:app -
 
 [tasks.test]
 description = "Run pytest under coverage and print the report"
-run = [
-  "uv run --locked coverage run -m pytest",
-  "uv run --locked coverage report",
-]
+# 計測は worker・API サーバーのプロセスごとの断片に分かれ、report がまとめて集計する。
+# 中断した実行や、同じ checkout で並行して走る実行 (手動と pre-push の hook 等) の断片を混ぜないよう、
+# 実行ごとの一時ディレクトリに置く。
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+data_dir="$(mktemp -d)"
+trap 'rm -rf "$data_dir"' EXIT
+export COVERAGE_FILE="$data_dir/.coverage"
+uv run --locked coverage run -m pytest
+uv run --locked coverage report
+# src/main.py は subprocess の API サーバーでだけ実行される。計測されていなければ子プロセスの計測が壊れている。
+if ! uv run --locked coverage report --include=src/main.py --fail-under=1 >/dev/null; then
+  echo "src/main.py was not measured: coverage of the API server subprocess is broken" >&2
+  exit 1
+fi
+"""
 
 [tasks.lint]
 description = "Check lint and formatting (ruff), layer dependencies (import-linter) and types (ty / pyright)"
@@ -102,7 +115,7 @@ fi
 description = "Remove caches and coverage artifacts"
 run = [
   "find . -name '__pycache__' -type d -prune -exec rm -r {} +",
-  "rm -rf .pytest_cache .ruff_cache .ty_cache .import_linter_cache htmlcov .coverage",
+  "rm -rf .pytest_cache .ruff_cache .ty_cache .import_linter_cache .hypothesis htmlcov .coverage .coverage.*",
 ]
 
 [tasks.docs]
