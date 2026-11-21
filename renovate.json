@@ -21,10 +21,24 @@
       "enabled": false
     },
     {
+      "description": "Renovate の docker datasource が公開日時を取得できるのは Docker Hub だけで、GHCR・GCR のベースイメージは minimumReleaseAge を満たしたか判定できず、既定 (timestamp-required) では更新が無期限に保留される。この 2 つは公開日時が無いときに age check を省いて更新する",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/astral-sh/uv", "gcr.io/distroless/cc-debian13"],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
       "description": "PR の乱立を防ぐため、major 以外 (minor/patch/pin/digest) の更新は manager・エコシステム横断で 1 つの PR に集約する。major はグルーピングせず個別 PR で人手レビューする",
       "matchUpdateTypes": ["minor", "patch", "pin", "digest", "pinDigest"],
       "groupName": "all non-major dependencies",
       "groupSlug": "all-minor-patch"
+    },
+    {
+      "description": "ベースイメージの digest 更新は自動マージの対象外なので、上の集約 PR に入ると、自動マージされるはずの minor/patch まで止まる。別の PR に分けて人手でレビューする",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/astral-sh/uv", "gcr.io/distroless/cc-debian13"],
+      "matchUpdateTypes": ["digest"],
+      "groupName": "docker base image digests",
+      "groupSlug": "docker-base-image-digests"
     },
     {
       "description": "patch/minor は minimumReleaseAge (7日) 経過後、required status check の成功を条件に GitHub の auto-merge で自動マージする (platformAutomerge は既定の true)。main の branch protection が required status check を持つので、CI 完了前には merge されない。major は供給網攻撃対策の猶予期間だけでは不十分なため対象外とし、人手レビューを必須とする",

@@ -4,3 +4,7 @@ extend-exclude = ["mise.lock", "uv.lock", ".mise/locks/"]
 
 [default]
 locale = "en-us"
+
+# Renovate の option 名で、英綴りのまま書く必要がある
+[default.extend-identifiers]
+minimumReleaseAgeBehaviour = "minimumReleaseAgeBehaviour"
