@@ -25,6 +25,8 @@ dev = [
   "ty>=0.0.99",
   # mise run dev の --reload がファイルの追加・削除も検知するのに使う。image には入れない。
   "watchfiles>=1.3.0",
+  "hypothesis>=6.170.15",
+  "pytest-xdist>=3.8.0",
 ]
 
 [tool.uv]
@@ -216,11 +218,18 @@ python_functions = ["test_*"]
 strict = true
 # 依存の非推奨警告を見落とさない。
 filterwarnings = ["error"]
-addopts = ["-ra", "--tb=short"]
+# テストは worker ごとに API サーバーと fake の Deco を 1 組起動して並列に走る (tests/conftest.py)。
+addopts = ["-ra", "--tb=short", "--numprocesses=auto"]
 
 [tool.coverage.run]
 source = ["src"]
 branch = true
+# テストは API サーバーを subprocess で起動し、pytest も xdist の worker で走るので、子プロセスも計測する。
+patch = ["subprocess"]
+# uvicorn は SIGTERM で終了するときに signal を投げ直し、atexit を通らずに終わるので、SIGTERM でも計測結果を保存する。
+sigterm = true
+# src を実行しない pytest の親プロセス (xdist の controller) が毎回出す警告。計測の結果は combine 後の report で見る。
+disable_warnings = ["no-data-collected"]
 
 [tool.coverage.report]
 show_missing = true

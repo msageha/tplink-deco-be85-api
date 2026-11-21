@@ -1,10 +1,10 @@
 """TP-Link Deco のローカル (luci) API クライアント。"""
 
 import json
-import re
 from base64 import b64decode, b64encode
 from contextlib import suppress
 from hashlib import md5
+from http import HTTPStatus
 from typing import Any, cast
 
 import requests
@@ -12,29 +12,87 @@ import requests
 from deco.crypto import SessionCipher, rsa_encrypt
 from deco.exceptions import DecoAuthError, DecoConnectionError, DecoError
 
-_SYSAUTH_RE = re.compile(r"sysauth=([^;]+)")
 
+def _named_items(
+    result: dict[str, Any], *, key: str, names: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """
+    result の一覧 (key) を返し、ルーターが base64 で返す名前フィールドを平文に戻す。
 
-def _decode_names(items: list[Any], *keys: str) -> list[Any]:
-    """ルーターが base64 で返す名前フィールドを平文に戻す。base64 でない値はそのまま残す。"""
-    for item in items:
-        for key in keys:
-            value = item.get(key)
-            if not isinstance(value, str):
-                continue
-            with suppress(ValueError):
-                item[key] = b64decode(value, validate=True).decode()
+    一覧は配列のほか、キー付きの Lua テーブル (空なら {}) でも返る。base64 でない名前はそのまま残す。
+
+    Raises:
+        DecoError: 一覧や項目が JSON の配列・object でない。
+    """
+    raw: Any = result.get(key)
+    if raw is None:
+        raw = []
+    if isinstance(raw, dict):
+        raw = list(cast("dict[str, Any]", raw).values())
+    if not isinstance(raw, list):
+        raise DecoError(f"Unexpected '{key}' in Deco response: not a list")
+    items: list[dict[str, Any]] = []
+    for entry in cast("list[object]", raw):
+        if not isinstance(entry, dict):
+            raise DecoError(
+                f"Unexpected '{key}' in Deco response: not a list of objects"
+            )
+        item = cast("dict[str, Any]", entry)
+        for name in names:
+            value = item.get(name)
+            if isinstance(value, str):
+                with suppress(ValueError):
+                    item[name] = b64decode(value, validate=True).decode()
+        items.append(item)
     return items
+
+
+def _numeric_code(envelope: dict[str, Any]) -> int | None:
+    """envelope の error_code。数値でなければ None (bool は int の派生で False == 0 になるので除く)。"""
+    error_code = envelope.get("error_code")
+    return error_code if type(error_code) is int else None
+
+
+def _excerpt(resp: requests.Response) -> str:
+    """
+    エラーメッセージに載せる応答本文の先頭。
+
+    本文は応答が宣言する文字コードで読まれ、孤立した surrogate を含みうるので、bytes の repr
+    (ASCII だけ) で書く。
+    """
+    return repr(resp.content[:200])
+
+
+def _json_safe[T](value: T) -> T:
+    """
+    ルーターの JSON から読んだ値を、API の応答に載せられることを確かめて返す。
+
+    JSON の構文は孤立した surrogate (U+D800 など) や NaN・Infinity も通すが、前者は UTF-8 で
+    表せず、後者は JSON の値ではないので、API の応答やエラーメッセージに載せられない。
+
+    Raises:
+        ValueError: 孤立した surrogate・NaN・Infinity を含む。
+    """
+    json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
+    return value
 
 
 def _decrypt_envelope(
     envelope: dict[str, Any], *, cipher: SessionCipher
 ) -> dict[str, Any]:
-    """`data` に暗号文があれば復号した中身を、無ければ envelope をそのまま返す。"""
+    """
+    `data` に暗号文があれば復号した中身を、無ければ envelope をそのまま返す。
+
+    Raises:
+        ValueError: 復号できない、中身が JSON の object でない、または応答に載せられない値を含む。
+    """
     data = envelope.get("data")
-    if isinstance(data, str) and data:
-        return json.loads(cipher.decrypt(data))
-    return envelope
+    decoded: Any = (
+        json.loads(cipher.decrypt(data)) if isinstance(data, str) and data else envelope
+    )
+    if not isinstance(decoded, dict):
+        raise ValueError("Deco envelope is not a JSON object")
+    return _json_safe(cast("dict[str, Any]", decoded))
 
 
 class DecoClient:
@@ -82,19 +140,25 @@ class DecoClient:
                 timeout=self._timeout,
                 verify=self._verify_ssl,
             )
-        except requests.RequestException as err:
+        # 例外の文字列には stok を含む URL が入るので、メッセージには型名だけを載せる。
+        except (requests.ConnectionError, requests.Timeout) as err:
             raise DecoConnectionError(
-                f"Cannot reach Deco at {self.host}: {err}"
+                f"Cannot reach Deco at {self.host}: {type(err).__name__}"
+            ) from err
+        except requests.RequestException as err:
+            raise DecoError(
+                f"Invalid HTTP response from Deco at {self.host}: {type(err).__name__}"
             ) from err
 
     def _login_form(self, form: str) -> dict[str, Any]:
         """ログイン前に無認証で読める form (keys / auth) の result を返す。"""
         resp = self._post(f"login?form={form}", params={"operation": "read"})
         try:
-            return resp.json()["result"]
-        except (ValueError, KeyError, TypeError) as err:
+            resp.raise_for_status()
+            return _json_safe(resp.json()["result"])
+        except (ValueError, KeyError, TypeError, requests.HTTPError) as err:
             raise DecoAuthError(
-                f"Unexpected response from login form '{form}': {resp.text}"
+                f"Unexpected response from login form '{form}': {_excerpt(resp)}"
             ) from err
 
     def login(self) -> SessionCipher:
@@ -115,27 +179,34 @@ class DecoClient:
             encrypted_password = rsa_encrypt(
                 self._password, public_key=keys["password"]
             )
+            body = {"operation": "login", "params": {"password": encrypted_password}}
+            # 鍵が短く署名のブロックを暗号化できないときも、ここで ValueError になる。
+            form = cipher.encrypt(json.dumps(body), login=True)
         except (KeyError, TypeError, ValueError) as err:
             raise DecoAuthError(f"Unexpected login keys: {keys} / {auth}") from err
-        body = {"operation": "login", "params": {"password": encrypted_password}}
-        resp = self._post(
-            "login?form=login", data=cipher.encrypt(json.dumps(body), login=True)
-        )
+        resp = self._post("login?form=login", data=form)
         try:
+            resp.raise_for_status()
             envelope = _decrypt_envelope(resp.json(), cipher=cipher)
-        except (ValueError, AttributeError) as err:
-            raise DecoAuthError(
-                f"Unexpected login response: {resp.text[:200]}"
-            ) from err
-        try:
-            stok = envelope["result"]["stok"]
-        except (KeyError, TypeError) as err:
+        except (ValueError, AttributeError, requests.HTTPError) as err:
+            raise DecoAuthError(f"Unexpected login response: {_excerpt(resp)}") from err
+        result: Any = envelope.get("result")
+        stok: Any = (
+            cast("dict[str, Any]", result).get("stok")
+            if isinstance(result, dict)
+            else None
+        )
+        if (
+            ("error_code" in envelope and _numeric_code(envelope) != 0)
+            or not isinstance(stok, str)
+            or not stok
+        ):
             # パスワード不一致は error_code -5002 と failureCount / attemptsAllowed で返る。
-            raise DecoAuthError(f"Login failed (check PASSWORD): {envelope}") from err
-        match = _SYSAUTH_RE.search(resp.headers.get("set-cookie", ""))
-        if match is None:
+            raise DecoAuthError(f"Login failed (check PASSWORD): {envelope}")
+        sysauth = resp.cookies.get("sysauth")
+        if not sysauth:
             raise DecoAuthError("Login succeeded but no sysauth cookie was returned")
-        self._cipher, self._stok, self._sysauth = cipher, stok, match.group(1)
+        self._cipher, self._stok, self._sysauth = cipher, stok, sysauth
         return cipher
 
     def logout(self) -> None:
@@ -143,7 +214,8 @@ class DecoClient:
         if self._cipher is None:
             return
         try:
-            with suppress(DecoConnectionError):
+            # 終了処理からも呼ばれるので、ルーターの不正な応答でも例外にしない。
+            with suppress(DecoError):
                 self._post(
                     "admin/system?form=logout",
                     data=self._cipher.encrypt(json.dumps({"operation": "logout"})),
@@ -161,20 +233,46 @@ class DecoClient:
             envelope = resp.json()
         except ValueError:
             envelope = None
-        if not isinstance(envelope, dict) or resp.status_code in (401, 403):
-            # セッション切れ (ログイン画面の HTML や 401/403)。一度だけ再ログインして再送する。
+        # セッション切れは 401/403 か、JSON でないログイン画面の HTML で返る。ほかの応答 (Content-Type
+        # が HTML でも本文が JSON のもの、HTML でない壊れた本文) は操作が適用されたか分からず、
+        # 再送すると write を二重に適用しうるので、再送しない。
+        expired = resp.status_code in {
+            HTTPStatus.UNAUTHORIZED,
+            HTTPStatus.FORBIDDEN,
+        } or (
+            resp.status_code == HTTPStatus.OK
+            and envelope is None
+            and resp.headers.get("content-type", "").startswith("text/html")
+        )
+        if expired:
+            # 一度だけ再ログインして再送する。
             if not retry:
                 raise DecoError(
                     f"Deco rejected request '{path}' (HTTP {resp.status_code}): "
-                    f"{resp.text[:200]}"
+                    f"{_excerpt(resp)}",
+                    error_code=_numeric_code(cast("dict[str, Any]", envelope))
+                    if isinstance(envelope, dict)
+                    else None,
                 )
             self._cipher = None
             return self._send(path, body=body, retry=False)
+        if not isinstance(envelope, dict):
+            raise DecoError(
+                f"Deco returned HTTP {resp.status_code} without an envelope for '{path}'"
+            )
         try:
             # isinstance は dict の型引数を絞れない。JSON object のキーは常に str になる。
-            return _decrypt_envelope(cast("dict[str, Any]", envelope), cipher=cipher)
+            decrypted = _decrypt_envelope(
+                cast("dict[str, Any]", envelope), cipher=cipher
+            )
         except ValueError as err:
-            raise DecoError(f"Cannot decrypt response for '{path}'") from err
+            raise DecoError(f"Invalid response for '{path}'") from err
+        if not resp.ok:
+            raise DecoError(
+                f"Deco returned HTTP {resp.status_code} for '{path}': {decrypted}",
+                error_code=_numeric_code(decrypted),
+            )
+        return decrypted
 
     def raw(
         self,
@@ -183,7 +281,14 @@ class DecoClient:
         operation: str = "read",
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """任意のエンドポイントを呼び、復号した envelope をそのまま返す (ルーター側のエラーでも例外にしない)。"""
+        """
+        任意のエンドポイントを呼び、復号した envelope をそのまま返す。
+
+        envelope のエラー (error_code など) は例外にせず返す。
+
+        Raises:
+            DecoError: HTTP エラーや不正な応答。
+        """
         body: dict[str, Any] = {"operation": operation}
         if params is not None:
             body["params"] = params
@@ -203,38 +308,50 @@ class DecoClient:
             DecoError: ルーターがエラーを返したとき (error_code を保持)。
         """
         envelope = self.raw(path, operation=operation, params=params)
-        if envelope.get("error_code") == 0:
+        numeric_code = _numeric_code(envelope)
+        if numeric_code == 0:
             return envelope.get("result")
         if envelope.get("success") is True:
             return envelope.get("data")
         raise DecoError(
-            f"Deco request '{path}' failed: {envelope}",
-            error_code=envelope.get("error_code"),
+            f"Deco request '{path}' failed: {envelope}", error_code=numeric_code
         )
 
     def _read(
-        self, path: str, *, params: dict[str, Any] | None = None
+        self,
+        path: str,
+        *,
+        operation: str = "read",
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self.request(path, params=params) or {}
+        """
+        設定・状態を 1 つ読み、object の result を返す (空なら {})。
+
+        Raises:
+            DecoError: ルーターがエラーを返した、または result が object でない。
+        """
+        result = self.request(path, operation=operation, params=params)
+        if result is None or result in ([], {}):  # 空の Lua テーブルは [] でも返る
+            return {}
+        if not isinstance(result, dict):
+            raise DecoError(f"Unexpected result for '{path}': not a JSON object")
+        return cast("dict[str, Any]", result)
 
     def get_device_list(self) -> list[dict[str, Any]]:
-        devices = self._read("admin/device?form=device_list").get("device_list", [])
-        return _decode_names(devices, "nickname", "custom_nickname")
+        result = self._read("admin/device?form=device_list")
+        return _named_items(
+            result, key="device_list", names=("nickname", "custom_nickname")
+        )
 
     def get_client_list(self) -> list[dict[str, Any]]:
         result = self._read(
             "admin/client?form=client_list", params={"device_mac": "default"}
         )
-        return _decode_names(result.get("client_list", []), "name")
+        return _named_items(result, key="client_list", names=("name",))
 
     def get_blocked_clients(self) -> list[dict[str, Any]]:
-        result: dict[str, Any] = (
-            self.request("admin/client?form=black_list", operation="list") or {}
-        )
-        clients: list[Any] | dict[str, Any] = result.get("client_list", [])
-        if isinstance(clients, dict):  # 空の Lua テーブルは [] ではなく {} で返る
-            clients = list(clients.values())
-        return _decode_names(clients, "name")
+        result = self._read("admin/client?form=black_list", operation="list")
+        return _named_items(result, key="client_list", names=("name",))
 
     def get_wan(self) -> dict[str, Any]:
         return self._read("admin/network?form=wan_ipv4")
@@ -325,12 +442,10 @@ class DecoClient:
         return self._read("admin/cloud_account?form=check_login")
 
     def get_ddns(self) -> dict[str, Any]:
-        return self.request("admin/cloud?form=ddns", operation="get") or {}
+        return self._read("admin/cloud?form=ddns", operation="get")
 
     def get_extra_component_info(self) -> dict[str, Any]:
-        return (
-            self.request("admin/web?form=extra_component_info", operation="get") or {}
-        )
+        return self._read("admin/web?form=extra_component_info", operation="get")
 
     def get_switch_list(self) -> dict[str, Any]:
         return self._read("admin/component_control?form=switch_list")
@@ -358,10 +473,8 @@ class DecoClient:
 
     def check_firmware(self) -> list[dict[str, Any]]:
         """TP-Link cloud に各ノードの最新ファームウェアを問い合わせる (数秒かかる)。"""
-        result: dict[str, Any] = (
-            self.request("admin/cloud?form=firmware_status", operation="check") or {}
-        )
-        return _decode_names(result.get("fw_list", []), "new_version")
+        result = self._read("admin/cloud?form=firmware_status", operation="check")
+        return _named_items(result, key="fw_list", names=("new_version",))
 
     def reboot(self, macs: list[str]) -> Any:
         return self.request(

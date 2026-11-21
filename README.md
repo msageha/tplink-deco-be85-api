@@ -150,8 +150,10 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
 | --------- | --------------------------------------------------------------------- |
 | 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等) |
 | 401       | ルーターへのログイン失敗 (`DecoAuthError`)                            |
-| 502       | ルーターがエラーを返した (`detail` と `error_code`)                   |
+| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)       |
 | 504       | ルーターに到達できない (`DecoConnectionError`)                        |
+
+422 の `detail` はどの項目がなぜ不正かを返し、送った値 (パスワード等) は含めません。
 
 ### Wi-Fi トグル例
 
@@ -204,7 +206,9 @@ curl 'http://127.0.0.1:8000/api/system/log?level=3&index=0&limit=100'
 ### 汎用パススルー `/api/raw`
 
 任意の Deco エンドポイントを直接叩けます。レスポンスは復号済みのエンベロープ全体
-(`result` / `error_code` または `success` / `data`) をそのまま返します。
+(`result` / `error_code` または `success` / `data`) をそのまま返します。ルーターが
+エンベロープでエラーを返しても 200 で返し、呼んだ endpoint の HTTP エラーや不正な応答は 502 にします
+(ログインや通信の失敗は「エラー」の表のとおり 401 / 504)。
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/raw \
@@ -225,6 +229,9 @@ curl -X POST http://127.0.0.1:8000/api/reboot \
   -H 'Content-Type: application/json' -d '{"confirm":true}'
 ```
 
+`confirm` は JSON の `true` のときだけ再起動し、`false` は 400、欠落や `"true"`・`1` などの型違いは 422 です。
+`macs` で再起動するノードの MAC を指定でき、省略・`null`・空の配列なら全ノードを再起動します。
+
 ## 開発
 
 Python は 3.14 以上で、使う minor version は `.python-version` で固定しています。uv は手元・CI・Docker イメージの build の
@@ -240,7 +247,7 @@ URL / checksum を固定しています。CI (`ci.yaml`) もローカルも同�
 ```bash
 mise run format                          # import の並べ替え + ruff format
 mise run lint                            # ruff check + ruff format --check + lint-imports + ty check + pyright
-mise run test                            # coverage run -m pytest + report (オフライン。実機には触れません)
+mise run test                            # coverage run -m pytest (並列) + report (オフライン。実機には触れません)
 mise run pre-commit                      # pre-commit stage の hook を全追跡ファイルに対して実行する (CI の Run prek step と同じ)
 mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシークレットスキャン (CI の gitleaks job と同じ)
 ```
@@ -534,7 +541,7 @@ src/
     service.py       DecoClient を lock + worker thread で直列実行する DecoService
   settings.py      環境変数 (pydantic-settings)
   main.py          FastAPI アプリと、例外 → HTTP status の対応
-tests/             オフライン単体テスト (src の構成をミラー)
+tests/             e2e テスト (起動した API に、luci を模した fake の Deco をつないで HTTP で叩く)
 ```
 
 `deco/` はプロトコル層 (暗号化・ログイン・通信・base64 名の復号)、`api/` は Web 層という
