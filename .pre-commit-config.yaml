@@ -10,14 +10,19 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # ファイルを書き換える hook は commit 時だけに実行する。push 時は push する commit ではなく作業ツリーを見るので、
+      # 次の作業のファイルを書き換えて push を失敗させうる。push 時の Python の整形の検査は lint hook が行う。
       - id: trailing-whitespace
+        stages: [pre-commit]
       - id: end-of-file-fixer
+        stages: [pre-commit]
       - id: check-yaml
       - id: check-json
       - id: check-toml
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: mixed-line-ending
+        stages: [pre-commit]
       # main は PR 必須 (branch protection) なので、手元で main に commit した時点で止める。
       # push 時は送信先ではなく checkout 中のブランチを見るので、commit 時だけ実行する。
       # 検証用の mise run pre-commit は main 上でも使えるよう、この hook を SKIP する。
@@ -34,6 +39,7 @@ repos:
         entry: mise run docs
         files: ^(mise\.toml|README\.md)$
         pass_filenames: false
+        stages: [pre-commit]
       - id: dprint-fmt
         name: Format json/yaml/markdown/toml/Dockerfile with dprint
         language: system
@@ -41,6 +47,7 @@ repos:
         # (例: uv.lock のみの commit) に exit 14 (No files found) で失敗しないようにする
         entry: mise exec -- dprint fmt --allow-no-files
         types_or: [json, yaml, markdown, toml, dockerfile]
+        stages: [pre-commit]
       - id: actionlint
         name: Lint GitHub Actions workflows with actionlint
         language: system
@@ -73,6 +80,7 @@ repos:
         entry: mise run format
         files: (\.py|^pyproject\.toml)$
         pass_filenames: false
+        stages: [pre-commit]
       - id: lint
         name: Lint, check layers and type-check python with mise run lint
         language: system
