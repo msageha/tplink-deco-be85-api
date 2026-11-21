@@ -72,15 +72,22 @@ repos:
         # mise.toml は zizmor の版と option (mise run zizmor) を持つ
         files: ^(\.github/|\.pre-commit-config\.yaml$|mise\.toml$)
         pass_filenames: false
-      # ruff・import-linter・ty・pyright の設定は pyproject.toml にあり、版は uv.lock と mise.toml で決まるので、
-      # format と lint は設定だけの変更でも実行する。
-      - id: format
-        name: Format python sources with mise run format
+      # 整形は commit するファイルだけに行う (mise run format はリポジトリ全体を整形し、commit しない未追跡のファイルも書き換える)。
+      # ruff format は import を並べ替えないので、import の並びの規則 (I) の修正を先に適用する。
+      - id: ruff-isort
+        name: Sort python imports with ruff
         language: system
-        entry: mise run format
-        files: (\.py|^pyproject\.toml)$
-        pass_filenames: false
+        entry: mise exec -- uv run --locked ruff check --select I --fix
+        types: [python]
         stages: [pre-commit]
+      - id: ruff-format
+        name: Format python with ruff
+        language: system
+        entry: mise exec -- uv run --locked ruff format
+        types: [python]
+        stages: [pre-commit]
+      # ruff・import-linter・ty・pyright の設定は pyproject.toml にあり、版は uv.lock と mise.toml で決まるので、
+      # lint は設定だけの変更でも実行する。型検査と層の検査はファイル単位では行えないので、作業ツリー全体を検査する。
       - id: lint
         name: Lint, check layers and type-check python with mise run lint
         language: system
