@@ -16,7 +16,7 @@ mise install  # ツールをインストールし、uv sync と git hooks のセ
 ```
 
 `mise install` を実行すると `[hooks] postinstall` により `uv sync --locked` (依存関係を `.venv` に入れる) と
-`prek install` (`.git/hooks/pre-commit` と `.git/hooks/commit-msg` の登録) が自動実行されます。
+`prek install` (`.git/hooks/pre-commit`・`.git/hooks/pre-push`・`.git/hooks/commit-msg` の登録) が自動実行されます。
 `.pre-commit-config.yaml` の hook 構成が変わったあとの既存 clone では `mise exec -- prek install` を再実行してください。
 
 以前 `uv run pre-commit install` で hook を登録していた clone では、`mise exec -- prek install --force` で
@@ -216,24 +216,39 @@ curl -X POST http://127.0.0.1:8000/api/reboot \
 
 ## 開発
 
-Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、ty (型チェック)、pytest です。
+Python は 3.14 以上です。Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、
+ty と pyright (型チェック)、import-linter (層の依存の検査)、pytest で、ruff・ty・pyright は strict に設定しています。
+Python の依存は、`pyproject.toml` の `[[tool.uv.index]]` で宣言した `https://pypi.flatt.tech/simple/` から取得します。
+この宣言は `UV_INDEX_URL` やユーザー設定の index より優先されるので、`uv.lock` の取得元は環境によらず同じになります。
+ただし `UV_DEFAULT_INDEX` はこの宣言より優先されるので、設定すると `uv.lock` と食い違います。
 それ以外のツールは `mise.toml` の `[tools]` で exact version に pin し、`mise.lock` でプラットフォームごとの
 URL / checksum を固定しています。CI (`ci.yaml`) もローカルも同じ `mise.lock` からツールを解決するため、
 同じ検証をローカルで再現できます。タスクの一覧は末尾の「[タスク](#タスク)」を参照してください。
 
 ```bash
-mise run format                          # ruff format .
-mise run lint                            # ruff format --check + ruff check + ty check
+mise run format                          # import の並べ替え + ruff format
+mise run lint                            # ruff check + ruff format --check + lint-imports + ty check + pyright
 mise run test                            # coverage run -m pytest + report (オフライン。実機には触れません)
-mise exec -- prek run --all-files        # pre-commit hooks を全ファイルに対して実行する (CI の prek job と同じ)
+mise run pre-commit                      # pre-commit stage の hook を全追跡ファイルに対して実行する (CI の prek job と同じ)
 mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシークレットスキャン (CI の gitleaks job と同じ)
 ```
 
 - [prek](https://github.com/j178/prek): pre-commit hook の実行基盤。hooks は `.pre-commit-config.yaml` で定義します。
-  ruff / ty の hook は `uv run --locked` で動かし、バージョンは `uv.lock` に一元化しています。
+  Python の hook は mise の task を呼びます。Python のファイルや設定が変わったとき、commit 時に `format` / `lint` hook が
+  `mise run format` / `mise run lint` を、push 時に `test` hook が `mise run test` を実行するので、手元の `mise run` と
+  同じ検査になります。hook は push する commit ではなく作業ツリーを検査する手元の事前検査で、push した変更の
+  最終的な判定は PR の CI が行います。
+  ruff / ty / import-linter は `uv run --locked` で動かし、バージョンは `uv.lock` に一元化しています。
+  pyright は npm で配布されるので、`mise.toml` に node と合わせて pin しています。
+  main への commit は `no-commit-to-branch` hook が止めます (main は PR 必須)。この hook は実際の commit 時だけに効かせ、
+  検証用の `mise run pre-commit` では実行しません (main を checkout したままでも検証できるようにするため)。
+- [import-linter](https://import-linter.readthedocs.io/): `pyproject.toml` の `[tool.importlinter]` の契約で、
+  `deco` が `api`・`main`・`settings` に依存しないこと、各パッケージ内の層の向き、`api` と `deco` の中で外部ライブラリ
+  (fastapi・Crypto・requests) を直接 import できるモジュールを検査します (`mise run lint` の中で実行)。
+  `src` 直下の `main.py` と `settings.py` は package ではないので、自身の import は検査の対象外です。
 - [dprint](https://dprint.dev/): json / markdown / toml / yaml のフォーマッタ (`dprint-fmt` hook)。
-  plugin の WASM URL は `dprint.json` に `url@sha256` の checksum 付きで pin します。`uv.lock` / `mise.lock` は対象外。
-- [actionlint](https://github.com/rhysd/actionlint): workflow の静的検査 (`actionlint-system` hook)。
+  plugin の WASM URL は `dprint.json` に `url@sha256` の checksum 付きで pin します。`uv.lock` / `mise.lock` / `.mise/locks/` は対象外。
+- [actionlint](https://github.com/rhysd/actionlint): workflow の静的検査 (`actionlint` hook)。
   `run:` スクリプトの検査に [shellcheck](https://github.com/koalaman/shellcheck) を使います。actionlint は PATH に
   shellcheck が無いとその検査を黙って省くため、ローカルと CI で結果が変わらないように mise で pin しています。
 - [hadolint](https://github.com/hadolint/hadolint): `Dockerfile` の静的検査 (`hadolint` hook)。
@@ -241,7 +256,7 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
   staged 差分を、CI の `gitleaks` job がコミット履歴全体を対象にします。
 - [commitlint](https://commitlint.js.org/): commit message を
   [Conventional Commits](https://www.conventionalcommits.org/) で検査する commit-msg hook (`commitlint` hook)。
-  ルールは `commitlint.config.mjs`。prek が node を自前で用意するため、リポジトリに node は不要です。
+  ルールは `commitlint.config.mjs`。prek が node と依存を隔離環境へ自前で用意します。
 - [fnox](https://fnox.jdx.dev/): secret manager。`PASSWORD` を age で暗号化して `fnox.toml` に持ちます。`[daemon]` は解決済みの secret をメモリに
   キャッシュする daemon を有効化し、`idle_timeout` (12h) 無操作で終了させる設定です。
 
@@ -251,7 +266,8 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 ### mise.toml / mise.lock を手で変更するとき
 
 `mise.toml` の `[tools]` を手で変更したら `mise lock` を実行して `mise.lock` を追従させ、両方を同じ commit に
-含めます。CI の mise-action は `mise.lock` があると `mise install --locked` でインストールするため、`mise.lock` が
+含めます。npm: backend のツール (pyright) は、`mise.lock` が依存の lock を `.mise/locks/` の下のファイル (sidecar) で
+参照するので、`.mise/locks/` の差分も同じ commit に含めます (参照先は `mise lock --sidecars` で確認できます)。CI の mise-action は `mise.lock` があると `mise install --locked` でインストールするため、`mise.lock` が
 古いままだと CI の各 job で失敗します。
 
 ### 依存関係の更新 (Renovate)
@@ -259,7 +275,9 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 `renovate.json` で以下を Renovate に任せています。
 
 - `pyproject.toml` の依存バージョンと `uv.lock` の更新、`uv.lock` の週次再解決 (`lockFileMaintenance`)。
-- `mise.toml` のバージョン bump と、それに伴う `mise.lock` の更新 (同じ PR で行われる)。
+- `mise.toml` のバージョン bump と、それに伴う `mise.lock` と `.mise/locks/` (pyright の依存の lock) の更新 (同じ PR で行われる)。
+  `.mise/locks/` の `package.json` は mise lock の生成物なので、npm manager の対象から外しています
+  (npm manager が別に更新すると、`mise.toml` の pin や `aube-lock.yaml` とずれるため)。
 - `.pre-commit-config.yaml` の hook `rev` と、`language: node` の hook の `additional_dependencies`。
 - workflow の `uses:` の commit SHA (バージョンはコメントで併記し、Renovate が両方を更新する)。
 - `dprint.json` の plugin URL と checksum (`customManagers`)。
@@ -276,10 +294,11 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 `.github/workflows/ci.yaml` は pull request 時に以下の job を並列実行します。job 名がそのまま
 required status check の名前になります。
 
-- `prek`: `mise.lock` 通りのツールで `.pre-commit-config.yaml` の全 hook を `prek run --all-files` で実行します。
-  ruff / ty の hook は `uv run --locked` で動くため、`uv.lock` と `pyproject.toml` の不整合もここで失敗します。
+- `prek`: `mise.lock` 通りのツールで `.pre-commit-config.yaml` の pre-commit stage の hook を `mise run pre-commit` で
+  全追跡ファイルに対して実行します。
+  `lint` hook は `uv run --locked` で動くため、`uv.lock` と `pyproject.toml` の不整合もここで失敗します。
 - `gitleaks`: コミット履歴全体を対象にシークレットスキャンを行います。
-- `verify`: `uv run --locked pytest` でテストを実行します。
+- `verify`: `mise run test` でテストを実行します。
 
 main への push では実行しません (main は PR 必須で、変更は PR の CI で検証してから merge されます)。
 workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョンをコメントで併記します。
@@ -474,7 +493,8 @@ tests/             オフライン単体テスト (src の構成をミラー)
 ```
 
 `deco/` はプロトコル層 (暗号化・ログイン・通信・base64 名の復号)、`api/` は Web 層という
-責務分離です。
+責務分離です。このうち、`deco/` から `api/`・`main.py`・`settings.py` への依存の禁止、`api/`・`deco/` の中の層の向き、
+外部ライブラリ (fastapi・Crypto・requests) を直接 import できるモジュールは、import-linter が `mise run lint` で検査します。
 
 ```mermaid
 flowchart LR
@@ -553,13 +573,19 @@ Sync the task list embedded in README.md with mise.toml
 
 - **Usage:** `format`
 
-Format python sources with ruff
+Format python sources with ruff and sort imports
 
 ## `lint`
 
 - **Usage:** `lint`
 
-Check formatting (ruff format --check), lint (ruff check) and types (ty check)
+Check lint and formatting (ruff), layer dependencies (import-linter) and types (ty / pyright)
+
+## `pre-commit`
+
+- **Usage:** `pre-commit`
+
+Run the pre-commit stage hooks on all tracked files with prek (same as the CI prek job)
 
 ## `run-image`
 

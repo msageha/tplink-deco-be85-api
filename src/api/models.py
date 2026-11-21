@@ -167,7 +167,7 @@ class WlanBandToggle(BaseModel):
 
 
 class WirelessSettings(BaseModel):
-    """band × network 1 つ分の Wi-Fi 設定。指定したフィールドだけを書き込む。"""
+    """band と network の組 1 つ分の Wi-Fi 設定。指定したフィールドだけを書き込む。"""
 
     model_config = ConfigDict(extra="forbid")
 

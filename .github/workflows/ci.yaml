@@ -1,7 +1,7 @@
 name: CI
 
 on:
-  # push トリガーは置かない: main は PR 必須 (ruleset。README「GitHub リポジトリ設定」参照) なので
+  # push トリガーは置かない: main は PR 必須 (branch protection。README「GitHub リポジトリ設定」参照) なので
   # PR で検証済みの内容しか入らない。
   # デフォルト types の明示: closed 等 CI が不要な PR イベントでは走らせない
   pull_request:
@@ -29,9 +29,9 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
 
-      # ruff / ty の hook は uv run --locked で動くため、uv.lock と pyproject.toml の不整合もここで失敗する
+      # lint hook (mise run lint) は uv run --locked で動くため、uv.lock と pyproject.toml の不整合もここで失敗する
       - name: Run prek
-        run: mise exec -- prek run --all-files
+        run: mise run pre-commit
 
   gitleaks:
     runs-on: ubuntu-latest
@@ -63,4 +63,4 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
 
       - name: Run tests
-        run: mise exec -- uv run --locked pytest
+        run: mise run test

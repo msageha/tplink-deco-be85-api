@@ -5,7 +5,7 @@ description = "FastAPI wrapper around the TP-Link Deco BE85 local API"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "fastapi>=0.140.13",
   "uvicorn[standard]>=0.52.0",
@@ -19,8 +19,10 @@ dependencies = [
 dev = [
   "pytest>=9.1.1",
   "coverage>=7.14.3",
-  "ruff>=0.15.19",
-  "ty>=0.0.64",
+  "import-linter>=2.13",
+  # 下限は [tool.ruff] / [tool.ty] の設定が使う規則と設定キーを持つ版。
+  "ruff>=0.17",
+  "ty>=0.0.99",
 ]
 
 [tool.uv]
@@ -28,23 +30,191 @@ dev = [
 exclude-newer = "7 days"
 package = false
 
+# UV_INDEX_URL やユーザー設定の index の有無で uv.lock の registry が変わらないよう、それらより優先される index を宣言する。
+# UV_DEFAULT_INDEX はこの宣言より優先されるので、設定すると uv.lock と食い違う。
+[[tool.uv.index]]
+name = "flatt"
+url = "https://pypi.flatt.tech/simple/"
+default = true
+
 [tool.ruff]
 line-length = 88
-target-version = "py311"
 src = ["src", "tests"]
 
+[tool.ruff.format]
+line-ending = "lf"
+
 [tool.ruff.lint]
-select = ["C", "E", "F", "I", "N", "UP", "W"]
-# 行長は formatter に任せる。
-ignore = ["E501"]
+# 例外メッセージは raise する箇所で path やルーターの応答を埋め込んで組み立て、HTTP の detail にそのまま出す。
+# そのため、メッセージを例外クラスへ移させる TRY003 と、raise の前に中間変数を挟ませる EM は採らない。
+select = [
+  "A",
+  "ANN",
+  "ARG",
+  "ASYNC",
+  "B",
+  "BLE",
+  "C4",
+  "C90",
+  # 複数行の docstring は、開く """ と閉じる """ をそれぞれ独立した行に置く。D のほかの規則 (docstring の有無など) は採らない。
+  "D209",
+  "D213",
+  "DTZ",
+  "E",
+  "EXE",
+  "F",
+  "FAST",
+  "FBT",
+  "FIX",
+  "FLY",
+  "FURB",
+  "G",
+  "I",
+  "ICN",
+  "INP",
+  "INT",
+  "ISC",
+  "LOG",
+  "N",
+  "PERF",
+  "PGH",
+  "PIE",
+  "PL",
+  "PT",
+  "PTH",
+  "Q",
+  "RET",
+  "RSE",
+  "RUF",
+  "S",
+  "SIM",
+  "SLF",
+  "SLOT",
+  "T10",
+  "T20",
+  "TD",
+  "TID",
+  "UP",
+  "W",
+  "YTT",
+]
+ignore = [
+  # 折り返せない日本語の説明文があるので、行長は formatter の整形だけに任せる。
+  "E501",
+  # ルーターが返す JSON は形がファームウェアで変わるので、検証せずに Any で受け渡す。
+  "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# テストの認証情報は実機に届かないダミーなので、S105 / S106 は採らない。
+"tests/**" = ["S101", "S105", "S106", "PLR2004"]
+
+[tool.ruff.lint.pylint]
+# 2 引数以上の関数を keyword-only で書かせる。
+# `def f(a, *, b)` の形は検出しない。外部の呼び出し規約に合わせる関数は noqa で除く。
+max-positional-args = 1
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
 
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"__future__.annotations".msg = "annotations are evaluated lazily on Python 3.14 (PEP 649); do not import annotations from __future__"
+
+[tool.importlinter]
+# src 直下の main.py と settings.py は package ではないので root にできない。
+# deco から 2 つへの依存は、root の外のモジュールとして forbidden 契約で検査する。
+root_packages = ["api", "deco"]
+# 外部パッケージ (fastapi・Crypto・requests) の直接の import も、protected 契約で検査する。
+# protected 契約は graph に現れるパッケージだけを指定できるので、どこからも直接 import されていない starlette は指定できない。
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "api は deco に依存し、deco は api に依存しない"
+type = "layers"
+layers = [
+  "api",
+  "deco",
+]
+
+[[tool.importlinter.contracts]]
+name = "deco は FastAPI 層の組み立て (main) と環境変数の設定 (settings) に依存しない"
+type = "forbidden"
+source_modules = ["deco"]
+forbidden_modules = ["main", "settings"]
+
+[[tool.importlinter.contracts]]
+name = "api の層は routes から models・service へ一方向に依存する"
+type = "layers"
+containers = ["api"]
+layers = [
+  "routes",
+  "models | service",
+]
+exhaustive = true
+
+[[tool.importlinter.contracts]]
+name = "deco の層は client から crypto・exceptions へ一方向に依存する"
+type = "layers"
+containers = ["deco"]
+layers = [
+  "client",
+  "crypto | exceptions",
+]
+exhaustive = true
+
+[[tool.importlinter.contracts]]
+name = "HTTP の framework を直接 import するのは api だけ (root の外の main は対象外)"
+type = "protected"
+protected_modules = ["fastapi"]
+allowed_importers = ["api"]
+
+[[tool.importlinter.contracts]]
+name = "暗号ライブラリを直接 import するのは deco.crypto だけ"
+type = "protected"
+protected_modules = ["Crypto"]
+allowed_importers = ["deco.crypto"]
+
+[[tool.importlinter.contracts]]
+name = "HTTP client を直接 import するのは deco.client だけ"
+type = "protected"
+protected_modules = ["requests"]
+allowed_importers = ["deco.client"]
+
+[tool.ty.environment]
+root = ["./src", "."]
+python-platform = "linux"
+
+[tool.ty.analysis]
+# 抑制は `ty: ignore` に一本化する。
+respect-type-ignore-comments = false
+strict-equality-semantics = true
+
+[tool.ty.rules]
+missing-override-decorator = "error"
+blanket-ignore-comment = "error"
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
+venvPath = "."
+venv = ".venv"
+pythonPlatform = "Linux"
+typeCheckingMode = "strict"
+# pyright は `type: ignore` を、括弧で規則を指定しても、行のすべての診断の抑制として扱う。
+# 抑制は、指定した規則だけを抑制する `pyright: ignore[<規則>]` で書く。
+enableTypeIgnoreComments = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = ["-ra", "--strict-markers", "--strict-config", "--tb=short"]
+python_functions = ["test_*"]
+strict = true
+# 依存の非推奨警告を見落とさない。
+filterwarnings = ["error"]
+addopts = ["-ra", "--tb=short"]
 
 [tool.coverage.run]
 source = ["src"]

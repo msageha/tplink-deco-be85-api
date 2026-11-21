@@ -3,13 +3,14 @@
 import json
 import re
 from base64 import b64decode, b64encode
+from contextlib import suppress
 from hashlib import md5
-from typing import Any
+from typing import Any, cast
 
 import requests
 
-from .crypto import SessionCipher, rsa_encrypt
-from .exceptions import DecoAuthError, DecoConnectionError, DecoError
+from deco.crypto import SessionCipher, rsa_encrypt
+from deco.exceptions import DecoAuthError, DecoConnectionError, DecoError
 
 _SYSAUTH_RE = re.compile(r"sysauth=([^;]+)")
 
@@ -21,15 +22,13 @@ def _decode_names(items: list[Any], *keys: str) -> list[Any]:
             value = item.get(key)
             if not isinstance(value, str):
                 continue
-            try:
+            with suppress(ValueError):
                 item[key] = b64decode(value, validate=True).decode()
-            except ValueError:
-                pass
     return items
 
 
 def _decrypt_envelope(
-    cipher: SessionCipher, envelope: dict[str, Any]
+    envelope: dict[str, Any], *, cipher: SessionCipher
 ) -> dict[str, Any]:
     """`data` に暗号文があれば復号した中身を、無ければ envelope をそのまま返す。"""
     data = envelope.get("data")
@@ -44,8 +43,8 @@ class DecoClient:
     def __init__(
         self,
         host: str,
-        password: str,
         *,
+        password: str,
         account: str = "admin",
         verify_ssl: bool = False,
         timeout: int = 30,
@@ -99,7 +98,8 @@ class DecoClient:
             ) from err
 
     def login(self) -> SessionCipher:
-        """ログインし、セッション (暗号鍵・stok・sysauth cookie) を作り直す。
+        """
+        ログインし、セッション (暗号鍵・stok・sysauth cookie) を作り直す。
 
         Raises:
             DecoAuthError: パスワード不一致や想定外の応答。
@@ -109,8 +109,12 @@ class DecoClient:
         keys = self._login_form("keys")
         auth = self._login_form("auth")
         try:
-            cipher = SessionCipher(auth["key"], int(auth["seq"]), self._cred_hash)
-            encrypted_password = rsa_encrypt(self._password, *keys["password"])
+            cipher = SessionCipher(
+                sign_key=auth["key"], seq=int(auth["seq"]), cred_hash=self._cred_hash
+            )
+            encrypted_password = rsa_encrypt(
+                self._password, public_key=keys["password"]
+            )
         except (KeyError, TypeError, ValueError) as err:
             raise DecoAuthError(f"Unexpected login keys: {keys} / {auth}") from err
         body = {"operation": "login", "params": {"password": encrypted_password}}
@@ -118,7 +122,7 @@ class DecoClient:
             "login?form=login", data=cipher.encrypt(json.dumps(body), login=True)
         )
         try:
-            envelope = _decrypt_envelope(cipher, resp.json())
+            envelope = _decrypt_envelope(resp.json(), cipher=cipher)
         except (ValueError, AttributeError) as err:
             raise DecoAuthError(
                 f"Unexpected login response: {resp.text[:200]}"
@@ -139,17 +143,16 @@ class DecoClient:
         if self._cipher is None:
             return
         try:
-            self._post(
-                "admin/system?form=logout",
-                data=self._cipher.encrypt(json.dumps({"operation": "logout"})),
-            )
-        except DecoConnectionError:
-            pass
+            with suppress(DecoConnectionError):
+                self._post(
+                    "admin/system?form=logout",
+                    data=self._cipher.encrypt(json.dumps({"operation": "logout"})),
+                )
         finally:
             self._cipher, self._stok, self._sysauth = None, "", ""
 
     def _send(
-        self, path: str, body: dict[str, Any], *, retry: bool = True
+        self, path: str, *, body: dict[str, Any], retry: bool = True
     ) -> dict[str, Any]:
         """本文を暗号化して POST し、復号した envelope を返す。"""
         cipher = self._cipher or self.login()
@@ -166,30 +169,40 @@ class DecoClient:
                     f"{resp.text[:200]}"
                 )
             self._cipher = None
-            return self._send(path, body, retry=False)
+            return self._send(path, body=body, retry=False)
         try:
-            return _decrypt_envelope(cipher, envelope)
+            # isinstance は dict の型引数を絞れない。JSON object のキーは常に str になる。
+            return _decrypt_envelope(cast("dict[str, Any]", envelope), cipher=cipher)
         except ValueError as err:
             raise DecoError(f"Cannot decrypt response for '{path}'") from err
 
     def raw(
-        self, path: str, operation: str = "read", params: dict[str, Any] | None = None
+        self,
+        path: str,
+        *,
+        operation: str = "read",
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """任意のエンドポイントを呼び、復号した envelope をそのまま返す (ルーター側のエラーでも例外にしない)。"""
         body: dict[str, Any] = {"operation": operation}
         if params is not None:
             body["params"] = params
-        return self._send(path, body)
+        return self._send(path, body=body)
 
     def request(
-        self, path: str, operation: str = "read", params: dict[str, Any] | None = None
+        self,
+        path: str,
+        *,
+        operation: str = "read",
+        params: dict[str, Any] | None = None,
     ) -> Any:
-        """エンドポイントを呼び、成功応答の本体 (`result` または `data`) を返す。
+        """
+        エンドポイントを呼び、成功応答の本体 (`result` または `data`) を返す。
 
         Raises:
             DecoError: ルーターがエラーを返したとき (error_code を保持)。
         """
-        envelope = self.raw(path, operation, params)
+        envelope = self.raw(path, operation=operation, params=params)
         if envelope.get("error_code") == 0:
             return envelope.get("result")
         if envelope.get("success") is True:
@@ -199,20 +212,26 @@ class DecoClient:
             error_code=envelope.get("error_code"),
         )
 
-    def _read(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.request(path, "read", params) or {}
+    def _read(
+        self, path: str, *, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self.request(path, params=params) or {}
 
     def get_device_list(self) -> list[dict[str, Any]]:
         devices = self._read("admin/device?form=device_list").get("device_list", [])
         return _decode_names(devices, "nickname", "custom_nickname")
 
     def get_client_list(self) -> list[dict[str, Any]]:
-        result = self._read("admin/client?form=client_list", {"device_mac": "default"})
+        result = self._read(
+            "admin/client?form=client_list", params={"device_mac": "default"}
+        )
         return _decode_names(result.get("client_list", []), "name")
 
     def get_blocked_clients(self) -> list[dict[str, Any]]:
-        result = self.request("admin/client?form=black_list", "list") or {}
-        clients = result.get("client_list", [])
+        result: dict[str, Any] = (
+            self.request("admin/client?form=black_list", operation="list") or {}
+        )
+        clients: list[Any] | dict[str, Any] = result.get("client_list", [])
         if isinstance(clients, dict):  # 空の Lua テーブルは [] ではなく {} で返る
             clients = list(clients.values())
         return _decode_names(clients, "name")
@@ -224,10 +243,10 @@ class DecoClient:
         return self._read("admin/network?form=internet")
 
     def get_lan(self) -> dict[str, Any]:
-        return self._read("admin/network?form=lan_ip", {"device_mac": "default"})
+        return self._read("admin/network?form=lan_ip", params={"device_mac": "default"})
 
     def get_ipv6(self) -> dict[str, Any]:
-        return self._read("admin/network?form=ipv6", {"device_mac": "default"})
+        return self._read("admin/network?form=ipv6", params={"device_mac": "default"})
 
     def get_performance(self) -> dict[str, Any]:
         return self._read("admin/network?form=performance")
@@ -253,8 +272,9 @@ class DecoClient:
     def get_wlan(self) -> dict[str, Any]:
         return self._read("admin/wireless?form=wlan")
 
-    def set_wlan(self, band: str, network: str, settings: dict[str, Any]) -> Any:
-        """band × network (host / guest) の Wi-Fi 設定を書き込む。
+    def set_wlan(self, *, band: str, network: str, settings: dict[str, Any]) -> Any:
+        """
+        band と network (host / guest) の組 1 つ分の Wi-Fi 設定を書き込む。
 
         ssid / password はルーターが base64 で保持するので、平文を受け取って変換する。
         """
@@ -265,7 +285,9 @@ class DecoClient:
             for key, value in settings.items()
         }
         return self.request(
-            "admin/wireless?form=wlan", "write", {band: {network: encoded}}
+            "admin/wireless?form=wlan",
+            operation="write",
+            params={band: {network: encoded}},
         )
 
     def get_wireless_power(self) -> dict[str, Any]:
@@ -303,10 +325,12 @@ class DecoClient:
         return self._read("admin/cloud_account?form=check_login")
 
     def get_ddns(self) -> dict[str, Any]:
-        return self.request("admin/cloud?form=ddns", "get") or {}
+        return self.request("admin/cloud?form=ddns", operation="get") or {}
 
     def get_extra_component_info(self) -> dict[str, Any]:
-        return self.request("admin/web?form=extra_component_info", "get") or {}
+        return (
+            self.request("admin/web?form=extra_component_info", operation="get") or {}
+        )
 
     def get_switch_list(self) -> dict[str, Any]:
         return self._read("admin/component_control?form=switch_list")
@@ -314,26 +338,34 @@ class DecoClient:
     def get_log_types(self) -> Any:
         return self.request("admin/log_export?form=types")
 
-    def get_system_log(self, level: int, index: int, limit: int) -> dict[str, Any]:
-        """システムログを 1 ページ分取得する。
+    def get_system_log(self, *, level: int, index: int, limit: int) -> dict[str, Any]:
+        """
+        システムログを 1 ページ分取得する。
 
         build でルーター側に level (get_log_types の value。8 = ALL) で絞ったスナップショットを
         作らせてから read する。index は 0 始まりのページ番号、limit は 1 ページの件数で、
         応答の totalNum はその limit での総ページ数。
         """
-        self.request("admin/log_export?form=feedback_log", "build", {"level": level})
+        self.request(
+            "admin/log_export?form=feedback_log",
+            operation="build",
+            params={"level": level},
+        )
         return self._read(
-            "admin/log_export?form=feedback_log", {"index": index, "limit": limit}
+            "admin/log_export?form=feedback_log",
+            params={"index": index, "limit": limit},
         )
 
     def check_firmware(self) -> list[dict[str, Any]]:
         """TP-Link cloud に各ノードの最新ファームウェアを問い合わせる (数秒かかる)。"""
-        result = self.request("admin/cloud?form=firmware_status", "check") or {}
+        result: dict[str, Any] = (
+            self.request("admin/cloud?form=firmware_status", operation="check") or {}
+        )
         return _decode_names(result.get("fw_list", []), "new_version")
 
     def reboot(self, macs: list[str]) -> Any:
         return self.request(
             "admin/device?form=system",
-            "reboot",
-            {"mac_list": [{"mac": mac} for mac in macs]},
+            operation="reboot",
+            params={"mac_list": [{"mac": mac} for mac in macs]},
         )
