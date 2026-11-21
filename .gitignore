@@ -71,6 +71,3 @@ tmp/
 *.bak
 CLAUDE.local.md
 .claude/settings.local.json
-
-# 上の `.env.*` に当たるため、許可はその後に置く
-!/.env.example

@@ -28,5 +28,5 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 USER 10001
 EXPOSE 8000
 
-# 認証情報は実行時に渡す (--env-file .env または -e PASSWORD=...)。
+# 認証情報は実行時に環境変数 PASSWORD で渡す (mise run run-image は fnox exec -- docker run -e PASSWORD ...)。
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
