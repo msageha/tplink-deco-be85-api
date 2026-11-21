@@ -77,12 +77,23 @@ mise run dev   # PASSWORD を fnox で復号し、uvicorn を --reload 付きで
 
 ```bash
 mise run build-image   # docker build -t deco-be85-api:latest .
+mise run check-image   # build し、ダミーの設定・read-only で起動して /api/health が応答するのを確かめる (CI の image job と同じ)
 mise run run-image     # PASSWORD を fnox で復号し、環境変数を渡して docker run する
 ```
 
-多段ビルド (`uv` ビルダ → `python:slim` ランナー、非 root 実行)。`PASSWORD` と `DECO_HOST` はイメージに含めず、
-実行時に環境変数で渡します。mise を使わずに起動する場合 (docker compose 等) は、`PASSWORD` と `DECO_HOST` を
-直接渡せば fnox は要りません。
+ランナーは shell やパッケージマネージャを持たない distroless (`gcr.io/distroless/cc-debian13:nonroot`) です。
+distroless には Python 3.14 のイメージが無いので、ビルダで uv が配布する Python を入れ、実行時に使わないファイル
+(tcl/tk・pip・ヘッダ等) を除いてからランナーへ写します。
+
+- UID 65532 の非 root で動きます。root filesystem を read-only にし、capability をすべて外しても動くので、
+  `mise run run-image` はその設定 (`--read-only --cap-drop ALL --security-opt no-new-privileges`) で起動します。
+  docker compose では `read_only: true`・`cap_drop: [ALL]`・`security_opt: [no-new-privileges:true]` が同じ設定です。
+- shell が無いので、`docker exec <container> sh` では入れず、shell を前提にしたコマンド (compose の healthcheck の
+  `CMD-SHELL`、`command` の中のパイプや変数展開等) も動きません。compose の `healthcheck.test` は exec 形式で Python を呼びます
+  (例: `["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]`)。
+  中を調べるときは `docker run --rm --entrypoint python deco-be85-api:latest -c '<code>'` で起動します。
+- `PASSWORD` と `DECO_HOST` はイメージに含めず、実行時に環境変数で渡します。mise を使わずに起動する場合
+  (docker compose 等) は、`PASSWORD` と `DECO_HOST` を直接渡せば fnox は要りません。
 
 ## エンドポイント
 
@@ -216,7 +227,8 @@ curl -X POST http://127.0.0.1:8000/api/reboot \
 
 ## 開発
 
-Python は 3.14 以上です。Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、
+Python は 3.14 以上で、使う minor version は `.python-version` で固定しています。uv は手元・CI・Docker イメージの build の
+どれでもこのファイルから Python を選びます。Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、
 ty と pyright (型チェック)、import-linter (層の依存の検査)、pytest で、ruff・ty・pyright は strict に設定しています。
 Python の依存は、`pyproject.toml` の `[[tool.uv.index]]` で宣言した `https://pypi.flatt.tech/simple/` から取得します。
 この宣言は `UV_INDEX_URL` やユーザー設定の index より優先されるので、`uv.lock` の取得元は環境によらず同じになります。
@@ -253,12 +265,12 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
   `run:` スクリプトの検査に [shellcheck](https://github.com/koalaman/shellcheck) を使います。actionlint は PATH に
   shellcheck が無いとその検査を黙って省くため、ローカルと CI で結果が変わらないように mise で pin しています。
 - [hadolint](https://github.com/hadolint/hadolint): `Dockerfile` の静的検査 (`hadolint` hook)。`.hadolint.yaml` で
-  style を含む全 severity を失敗にし、ベースイメージの registry を docker.io / ghcr.io に限り、
+  style を含む全 severity を失敗にし、ベースイメージの registry を docker.io / ghcr.io / gcr.io に限り、
   OCI label (`org.opencontainers.image.source` / `licenses`) を必須にしています。Dockerfile 内の
   `# hadolint ignore=` は無効にしているので、除外が要るときは `.hadolint.yaml` の `ignored` に書きます。
 - [typos](https://github.com/crate-ci/typos): 英単語の typo 検査 (`typos` hook)。`typos.toml` で綴りを米国英語に
   統一し、生成物の `uv.lock` / `mise.lock` / `.mise/locks/` を対象外にしています。誤検知は `typos.toml` の `[default.extend-words]`
-  で単語ごとに除外します。`[files] extend-exclude` でファイルごと外すのは、生成物のように中身を直せないファイルだけです。
+  で単語ごとに、外部ツールの option 名のように綴りを変えられない識別子は `[default.extend-identifiers]` で識別子ごとに除外します。`[files] extend-exclude` でファイルごと外すのは、生成物のように中身を直せないファイルだけです。
 - [zizmor](https://docs.zizmor.sh/): workflow と `.pre-commit-config.yaml` のセキュリティ監査。`zizmor` hook と
   `mise run zizmor` が同じ設定で実行し、false positive になりうるものを含む全 finding と、解析できない入力を
   失敗にします。GitHub API を使う online audit (impostor-commit 等) は、環境変数 `ZIZMOR_GITHUB_TOKEN` /
@@ -296,13 +308,23 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 - `.pre-commit-config.yaml` の hook `rev` と、`language: node` の hook の `additional_dependencies`。
 - workflow の `uses:` の commit SHA (バージョンはコメントで併記し、Renovate が両方を更新する)。
 - `dprint.json` の plugin URL と checksum (`customManagers`)。
+- `Dockerfile` のベースイメージ。uv は tag (uv の版) と digest、distroless は `nonroot` tag の digest を更新します。
+  - イメージの Python の patch version (と Python に同梱の OpenSSL 等) は uv の版で決まり、新しい Python の配布物を収録した uv の版に
+    上がったときに更新されます (uv の更新がいつも Python を変えるわけではありません)。
+  - Renovate の docker datasource が公開日時を取得できるのは Docker Hub だけで、GHCR・GCR のこの 2 つは `minimumReleaseAge` を
+    判定できません。公開日時が無い更新は 7 日の猶予期間を置かずに出します (`minimumReleaseAgeBehaviour: timestamp-optional`)。
+  - uv の minor / patch は他の依存と同じ PR で自動マージされます。tag を変えない digest の更新 (distroless の OS パッケージの修正等) は
+    別の PR になり、人手で merge します。
 
-`Dockerfile` の Python は Renovate の対象外です (tag の一部だけを `ARG PYTHON_VERSION` で変数にしているため、dockerfile manager が
-置換位置を特定できない)。更新は `ARG PYTHON_VERSION` を手で書き換えます (ビルダとランナーの両イメージが同じ値を参照する)。
+次は Renovate の対象外で、手で書き換えます。
 
-更新 PR は毎週月曜 9 時前 (Asia/Tokyo) にまとめて作られます。major 以外の更新は 1 つの PR に集約します。このうち minor / patch は
-`minimumReleaseAge` (7 日) 経過後、required checks の成功を条件に GitHub の auto-merge で自動マージします
-(リポジトリの `allow_auto_merge` が必要)。major は個別 PR で人手レビューします。
+- Python の minor version (`.python-version`)。依存とツールが新しい minor に対応したのを確かめてから上げます
+  (`renovate.json` で pyenv manager を無効にしています)。
+- distroless の Debian の世代 (`Dockerfile` の `cc-debian13` のイメージ名)。
+
+更新 PR は毎週月曜 9 時前 (Asia/Tokyo) にまとめて作られます。major 以外の更新は、ベースイメージの digest を除いて 1 つの PR に
+集約します。このうち minor / patch は `minimumReleaseAge` (7 日) 経過後 (ベースイメージは猶予期間なし)、required checks の成功を
+条件に GitHub の auto-merge で自動マージします (リポジトリの `allow_auto_merge` が必要)。major は個別 PR で人手レビューします。
 
 ### CI
 
@@ -314,6 +336,8 @@ required status check の名前になります。
   `lint` hook は `uv run --locked` で動くため、`uv.lock` と `pyproject.toml` の不整合もここで失敗します。
 - `gitleaks`: コミット履歴全体を対象にシークレットスキャンを行います。
 - `verify`: `mise run test` でテストを実行します。
+- `image (amd64)` / `image (arm64)`: 各 arch の runner で `mise run check-image` を実行し、Docker イメージを build して
+  read-only・capability なしで起動し、`/api/health` が応答することを確かめます。
 
 main への push では実行しません (main は PR 必須で、変更は PR の CI で検証してから merge されます)。
 workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョンをコメントで併記します。
@@ -322,9 +346,11 @@ workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョン
 
 ファイルとして管理できないリポジトリ設定です。public リポジトリなので ruleset と secret scanning が使えます。
 main には現在 classic branch protection (PR 必須・required checks・linear history・conversation resolution) が
-設定されています。CI の job 名を変えたら required checks を `ci.yaml` の job 名 (`prek` / `gitleaks` / `verify`)
-に追従させます (旧名の check は報告されなくなり、merge が BLOCKED のままになる)。ruleset へ移行する場合は、
-二重に評価されないよう先に classic branch protection を外します。
+設定されています。CI の job を足したり名前を変えたりしたら、required checks を `ci.yaml` の job 名 (`prek` / `gitleaks` / `verify` /
+`image (amd64)` / `image (arm64)`) に追従させます。足した job は登録するまで必須にならず、失敗しても Renovate の自動マージが通ります。
+登録は、その job を足した PR で check が成功したのを見てから、その PR を merge する前に行います (GitHub は、直近 7 日にリポジトリで成功した check を
+required checks の条件にする)。名前を変えたときは旧名の check が報告されなくなり、merge が BLOCKED のままになります。
+ruleset へ移行する場合は、二重に評価されないよう先に classic branch protection を外します。
 
 ```bash
 REPO=msageha/tplink-deco-be85-api
@@ -336,7 +362,9 @@ gh api -X PATCH "repos/$REPO/branches/main/protection/required_status_checks" --
   "checks": [
     {"context": "prek", "app_id": 15368},
     {"context": "gitleaks", "app_id": 15368},
-    {"context": "verify", "app_id": 15368}
+    {"context": "verify", "app_id": 15368},
+    {"context": "image (amd64)", "app_id": 15368},
+    {"context": "image (arm64)", "app_id": 15368}
   ]
 }
 JSON
@@ -383,7 +411,9 @@ gh api -X POST "repos/$REPO/rulesets" --input - <<'JSON'
       "required_status_checks": [
         {"context": "prek", "integration_id": 15368},
         {"context": "gitleaks", "integration_id": 15368},
-        {"context": "verify", "integration_id": 15368}
+        {"context": "verify", "integration_id": 15368},
+        {"context": "image (amd64)", "integration_id": 15368},
+        {"context": "image (arm64)", "integration_id": 15368}
       ]
     }}
   ]
@@ -565,6 +595,14 @@ Deco の公開されていないローカル API をリバースエンジニア�
 - **Usage:** `build-image`
 
 Build the Docker image deco-be85-api:latest
+
+## `check-image`
+
+- Depends: build-image
+
+- **Usage:** `check-image`
+
+Build the Docker image and check that it serves /api/health with a read-only root filesystem and no capabilities
 
 ## `clean`
 

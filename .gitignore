@@ -32,6 +32,7 @@
 !/renovate.json
 
 !/pyproject.toml
+!/.python-version
 !/uv.lock
 !/Dockerfile
 !/.hadolint.yaml
