@@ -77,7 +77,7 @@ mise run dev   # PASSWORD を fnox で復号し、uvicorn を --reload 付きで
 
 ```bash
 mise run build-image   # docker build -t deco-be85-api:latest .
-mise run check-image   # build し、ダミーの設定で起動して /api/health と非 root での実行を確かめる (CI の image job と同じ)
+mise run check-image   # build し、ダミーの設定・read-only で起動して /api/health が応答するのを確かめる (CI の image job と同じ)
 mise run run-image     # PASSWORD を fnox で復号し、環境変数を渡して docker run する
 ```
 
@@ -227,7 +227,8 @@ curl -X POST http://127.0.0.1:8000/api/reboot \
 
 ## 開発
 
-Python は 3.14 以上です。Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、
+Python は 3.14 以上で、使う minor version は `.python-version` で固定しています。uv は手元・CI・Docker イメージの build の
+どれでもこのファイルから Python を選びます。Python のツールチェーンは uv (依存関係と Python 本体)、ruff (lint + formatter)、
 ty と pyright (型チェック)、import-linter (層の依存の検査)、pytest で、ruff・ty・pyright は strict に設定しています。
 Python の依存は、`pyproject.toml` の `[[tool.uv.index]]` で宣言した `https://pypi.flatt.tech/simple/` から取得します。
 この宣言は `UV_INDEX_URL` やユーザー設定の index より優先されるので、`uv.lock` の取得元は環境によらず同じになります。
@@ -307,13 +308,19 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 - `.pre-commit-config.yaml` の hook `rev` と、`language: node` の hook の `additional_dependencies`。
 - workflow の `uses:` の commit SHA (バージョンはコメントで併記し、Renovate が両方を更新する)。
 - `dprint.json` の plugin URL と checksum (`customManagers`)。
-- `Dockerfile` のベースイメージ。uv は tag (uv の版) と digest、distroless は `nonroot` tag の digest を更新します。Python の patch version は
-  uv が決めるので、uv のイメージの更新に伴って上がります。Python の minor version (`UV_PYTHON`) と distroless の Debian の世代
-  (`cc-debian13` のイメージ名) は手で書き換えます。GHCR・GCR は公開日時を返さず `minimumReleaseAge` を
-  判定できないので、この 2 つは 7 日の猶予期間を置かずに更新します (`minimumReleaseAgeBehaviour: timestamp-optional`)。
-  Renovate の Docker datasource が公開日時を取得できるのは Docker Hub だけで、この設定は公開日時が無い更新にだけ効きます。
-  uv の minor / patch は他の依存と同じ PR で自動マージされ、tag を変えない digest の更新 (distroless の OS パッケージの修正等) は
-  別の PR になり、人手で merge します。
+- `Dockerfile` のベースイメージ。uv は tag (uv の版) と digest、distroless は `nonroot` tag の digest を更新します。
+  - イメージの Python の patch version (と Python に同梱の OpenSSL 等) は uv の版で決まり、新しい Python の配布物を収録した uv の版に
+    上がったときに更新されます (uv の更新がいつも Python を変えるわけではありません)。
+  - Renovate の docker datasource が公開日時を取得できるのは Docker Hub だけで、GHCR・GCR のこの 2 つは `minimumReleaseAge` を
+    判定できません。公開日時が無い更新は 7 日の猶予期間を置かずに出します (`minimumReleaseAgeBehaviour: timestamp-optional`)。
+  - uv の minor / patch は他の依存と同じ PR で自動マージされます。tag を変えない digest の更新 (distroless の OS パッケージの修正等) は
+    別の PR になり、人手で merge します。
+
+次は Renovate の対象外で、手で書き換えます。
+
+- Python の minor version (`.python-version`)。依存とツールが新しい minor に対応したのを確かめてから上げます
+  (`renovate.json` で pyenv manager を無効にしています)。
+- distroless の Debian の世代 (`Dockerfile` の `cc-debian13` のイメージ名)。
 
 更新 PR は毎週月曜 9 時前 (Asia/Tokyo) にまとめて作られます。major 以外の更新は、ベースイメージの digest を除いて 1 つの PR に
 集約します。このうち minor / patch は `minimumReleaseAge` (7 日) 経過後 (ベースイメージは猶予期間なし)、required checks の成功を
@@ -329,8 +336,8 @@ required status check の名前になります。
   `lint` hook は `uv run --locked` で動くため、`uv.lock` と `pyproject.toml` の不整合もここで失敗します。
 - `gitleaks`: コミット履歴全体を対象にシークレットスキャンを行います。
 - `verify`: `mise run test` でテストを実行します。
-- `image (amd64)` / `image (arm64)`: 各 arch の runner で Docker イメージを build し、`--read-only` で起動して
-  `/api/health` が応答することと、非 root (UID 65532) で動くことを確かめます。
+- `image (amd64)` / `image (arm64)`: 各 arch の runner で `mise run check-image` を実行し、Docker イメージを build して
+  read-only・capability なしで起動し、`/api/health` が応答することを確かめます。
 
 main への push では実行しません (main は PR 必須で、変更は PR の CI で検証してから merge されます)。
 workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョンをコメントで併記します。
@@ -341,7 +348,7 @@ workflow の外部依存 (`uses:`) は commit SHA で固定し、バージョン
 main には現在 classic branch protection (PR 必須・required checks・linear history・conversation resolution) が
 設定されています。CI の job を足したり名前を変えたりしたら、required checks を `ci.yaml` の job 名 (`prek` / `gitleaks` / `verify` /
 `image (amd64)` / `image (arm64)`) に追従させます。足した job は登録するまで必須にならず、失敗しても Renovate の自動マージが通ります。
-登録は、その job を足した PR で check が成功したのを見てから行います (GitHub は、直近 7 日にリポジトリで成功した check を
+登録は、その job を足した PR で check が成功したのを見てから、その PR を merge する前に行います (GitHub は、直近 7 日にリポジトリで成功した check を
 required checks の条件にする)。名前を変えたときは旧名の check が報告されなくなり、merge が BLOCKED のままになります。
 ruleset へ移行する場合は、二重に評価されないよう先に classic branch protection を外します。
 
@@ -591,9 +598,11 @@ Build the Docker image deco-be85-api:latest
 
 ## `check-image`
 
+- Depends: build-image
+
 - **Usage:** `check-image`
 
-Build the Docker image and check that it serves /api/health as a non-root user with a read-only root filesystem
+Build the Docker image and check that it serves /api/health with a read-only root filesystem and no capabilities
 
 ## `clean`
 

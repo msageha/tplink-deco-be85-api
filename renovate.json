@@ -11,6 +11,10 @@
   "pre-commit": {
     "enabled": true
   },
+  "pyenv": {
+    "description": ".python-version の Python の minor は、依存とツールの対応を確かめてから手で上げる",
+    "enabled": false
+  },
   "minimumReleaseAge": "7 days",
   "schedule": ["before 9am on monday"],
   "packageRules": [
@@ -21,9 +25,8 @@
       "enabled": false
     },
     {
-      "description": "Renovate の docker datasource が公開日時を取得できるのは Docker Hub だけで、GHCR・GCR のベースイメージは minimumReleaseAge を満たしたか判定できず、既定 (timestamp-required) では更新が無期限に保留される。この 2 つは公開日時が無いときに age check を省いて更新する",
+      "description": "docker datasource が公開日時を取得できるのは Docker Hub だけで、Dockerfile のベースイメージ (GHCR・GCR) は minimumReleaseAge を判定できず、既定 (timestamp-required) では更新が無期限に保留される。公開日時が無いときは age check を省く",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/astral-sh/uv", "gcr.io/distroless/cc-debian13"],
       "minimumReleaseAgeBehaviour": "timestamp-optional"
     },
     {
@@ -35,13 +38,12 @@
     {
       "description": "ベースイメージの digest 更新は自動マージの対象外なので、上の集約 PR に入ると、自動マージされるはずの minor/patch まで止まる。別の PR に分けて人手でレビューする",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/astral-sh/uv", "gcr.io/distroless/cc-debian13"],
       "matchUpdateTypes": ["digest"],
       "groupName": "docker base image digests",
       "groupSlug": "docker-base-image-digests"
     },
     {
-      "description": "patch/minor は minimumReleaseAge (7日) 経過後、required status check の成功を条件に GitHub の auto-merge で自動マージする (platformAutomerge は既定の true)。main の branch protection が required status check を持つので、CI 完了前には merge されない。major は供給網攻撃対策の猶予期間だけでは不十分なため対象外とし、人手レビューを必須とする",
+      "description": "patch/minor は minimumReleaseAge (7日) 経過後 (公開日時が無い docker の更新は上の規則により猶予なし)、required status check の成功を条件に GitHub の auto-merge で自動マージする (platformAutomerge は既定の true)。main の branch protection が required status check を持つので、CI 完了前には merge されない。major は供給網攻撃対策の猶予期間だけでは不十分なため対象外とし、人手レビューを必須とする",
       "matchUpdateTypes": ["patch", "minor"],
       "automerge": true,
       "automergeType": "pr"

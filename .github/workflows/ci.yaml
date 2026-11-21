@@ -97,8 +97,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # check-image が使うのは runner の docker と curl だけなので、mise 本体だけを入れ、ツールの導入・キャッシュの
+      # 復元・postinstall の hook (uv sync・git hooks の登録) を省く。
       - name: Install mise
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          install: false
+          cache: false
 
       - name: Build and check the image
-        run: mise run check-image
+        run: mise run --skip-tools check-image
