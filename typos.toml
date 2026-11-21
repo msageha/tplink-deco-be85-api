@@ -1,0 +1,6 @@
+# lock file は生成物で typo を直せず、Renovate の自動更新 PR を誤検知で止めうるので対象外にする
+[files]
+extend-exclude = ["mise.lock", "uv.lock"]
+
+[default]
+locale = "en-us"
