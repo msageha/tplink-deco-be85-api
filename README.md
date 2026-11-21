@@ -234,9 +234,9 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 ```
 
 - [prek](https://github.com/j178/prek): pre-commit hook の実行基盤。hooks は `.pre-commit-config.yaml` で定義します。
-  Python の hook は mise の task を呼びます。Python のファイルや設定が変わったとき、commit 時に `format` / `lint` hook が
-  `mise run format` / `mise run lint` を、push 時に `test` hook が `mise run test` を実行するので、手元の `mise run` と
-  同じ検査になります。hook は push する commit ではなく作業ツリーを検査する手元の事前検査で、push した変更の
+  Python のファイルや設定が変わったとき、commit 時に `ruff-isort` / `ruff-format` hook が commit するファイルの
+  import を並べ替えて整形し (未追跡のファイルは書き換えません)、`lint` hook が `mise run lint` を、push 時に `lint` hook と
+  `test` hook が `mise run lint` / `mise run test` を実行するので、手元の `mise run` と同じ検査になります。hook は push する commit ではなく作業ツリーを検査する手元の事前検査で、push した変更の
   最終的な判定は PR の CI が行います。ファイルを書き換える hook (整形・README のタスク一覧の同期等) は commit 時だけに
   実行し、push 時は検査だけを行います (作業ツリーの次の作業のファイルを書き換えないため)。
   ruff / ty / import-linter は `uv run --locked` で動かし、バージョンは `uv.lock` に一元化しています。
