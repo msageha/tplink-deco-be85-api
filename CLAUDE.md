@@ -9,7 +9,7 @@ endpoint 一覧・ログインフロー・実機で確認した luci form の挙
 - `mise run test`: coverage 付き pytest。オフラインで完結し、実機には触れない。
 - `mise run lint`: ruff format --check / ruff check / ty check。
 - `mise exec -- prek run --all-files`: 全 hook (dprint、actionlint、hadolint、ruff、ty、gitleaks 等) を実行する。CI の `prek` job と同じ検証。
-- `mise run dev`: 開発サーバー (http://127.0.0.1:8000)。認証情報と接続先はリポジトリ直下の `.env` (`PASSWORD` / `DECO_HOST`)。
+- `mise run dev`: 開発サーバー (http://127.0.0.1:8000)。`PASSWORD` は `fnox.toml` (age で暗号化) を `fnox exec` が復号して渡し、`DECO_HOST` は `mise.toml` の `[env]` が渡す。`fnox.toml` の鍵で復号する環境では 1Password CLI (`op`) で age の秘密鍵を読むので、1Password の承認 (Touch ID 等) を待って止まることがある。
 - `mise run docs`: `mise.toml` の tasks を変更したあと README のタスク一覧を同期する。
 
 ## 構成

@@ -14,17 +14,14 @@ hadolint = "2.15.1"
 shellcheck = "0.11.0"
 
 [env]
-# 認証情報と接続先 (PASSWORD / DECO_HOST 等) はアプリが読むリポジトリ直下の .env に書く (.env.example 参照)。
-# シェルにも同じ値を通したいときはここで定義する。ローカルだけの値は mise.local.toml に書くと
-# 上書きできる (ホワイトリスト方式の .gitignore により追跡されない)。
-#
-# 例:
-# DECO_HOST = "http://172.16.1.1"
-# _.file = ".env"  # .env ファイルを読み込む
+DECO_HOST = "http://172.16.1.1"
+
+# secret (PASSWORD: Deco の管理パスワード) は fnox.toml で管理する。mise run dev / run-image は
+# fnox exec で復号してアプリに環境変数として渡す (復号できなければ起動しない)。
 
 [tasks.dev]
 description = "Run the API server with auto-reload on http://127.0.0.1:8000"
-run = "uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000"
+run = "fnox exec --only PASSWORD --if-missing error -- uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000"
 
 [tasks.test]
 description = "Run pytest under coverage and print the report"
@@ -50,8 +47,9 @@ description = "Build the Docker image deco-be85-api:latest"
 run = "docker build -t deco-be85-api:latest ."
 
 [tasks.run-image]
-description = "Run the Docker image on port 8000 with .env passed via --env-file"
-run = "docker run --rm -p 8000:8000 --env-file .env deco-be85-api:latest"
+description = "Run the Docker image on port 8000 with PASSWORD from fnox and the other settings from the environment"
+# -e NAME (値なし) は設定されている変数だけを渡すので、未設定の ACCOUNT / VERIFY_SSL / TIMEOUT はアプリ (src/settings.py) の既定値になる
+run = "fnox exec --only PASSWORD --if-missing error -- docker run --rm -p 8000:8000 -e PASSWORD -e DECO_HOST -e ACCOUNT -e VERIFY_SSL -e TIMEOUT deco-be85-api:latest"
 
 [tasks.clean]
 description = "Remove caches and coverage artifacts"

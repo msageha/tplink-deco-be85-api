@@ -1,3 +1,14 @@
 [daemon]
 enabled = true
 idle_timeout = "12h"
+
+[providers]
+onepass = { type = "1password", vault = "Private" }
+
+[providers.age]
+type = "age"
+recipients = ["age100fze4m9k88fyzpg2z5l2hfmk9f299mzl63sjz3s9gk0s8hkt94smeccd0"]
+identity = { provider = "onepass", value = "age-identity" }
+
+[secrets]
+PASSWORD = { provider = "age", value = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBDbWRtRno4aUtBM01ubE1DeVZvTlN0d2p0cmE1Ui9pZFJ3TVVhK0xucUFvCld2TU9QWjljM0JWZlQvajFjd3ZlUGx5dGFya1NSOUdER1lPdExWQzhzUzgKLT4gMHFSLWdyZWFzZSA4c2MgewphZwotLS0geU1LTzJuZ2ZIMWw5M05XK3BBUVZKWCtYNWU3ZGRDN2tjdC9IdGFmdVFJZwpnJOWRo2hkp9od/DqA/8zpjtx9y7rf1EqV/QwIW5OHMaFCCDyxSY8FDgS5okffurI=", description = "Deco の管理パスワード (TP-Link ID のパスワード)" }

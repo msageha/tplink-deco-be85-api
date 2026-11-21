@@ -23,25 +23,49 @@ mise install  # ツールをインストールし、uv sync と git hooks のセ
 旧 hook を置き換えてください。置き換えないと prek が旧 hook (`.git/hooks/pre-commit.legacy`) も実行し、
 `uv sync` で削除された pre-commit package を呼んで commit が失敗します。
 
-認証情報はリポジトリ直下の `.env` に記載します。`.env.example` をコピーして編集してください。
+Deco の管理パスワード (TP-Link ID のパスワード) は [fnox](https://fnox.jdx.dev/) で age 暗号化し、`fnox.toml` の
+`PASSWORD` に保存しています。`mise run dev` / `mise run run-image` は `fnox exec` で復号した値を環境変数 `PASSWORD`
+としてアプリに渡し、復号できなければ起動しません。
+
+復号に使う age の秘密鍵は、リポジトリ管理者の 1Password (`Private` vault の `age-identity`) から
+[1Password CLI](https://developer.1password.com/docs/cli/) (`op`) で読みます。`op` をインストールしてサインインしておいてください。
+復号のたびに 1Password の承認 (Touch ID 等) を求められることがあります。
+
+パスワードを変えたときは、リポジトリ管理者が次のコマンドで登録し直します (入力は表示されません)。`-c ./fnox.toml` は
+`fnox.local.toml` を読まずに `fnox.toml` の鍵で暗号化させるために付けます。
 
 ```bash
-cp .env.example .env
+mise exec -- fnox -c ./fnox.toml set PASSWORD
 ```
 
-```dotenv
-PASSWORD=<Deco 管理パスワード (TP-Link ID のパスワード)>
-# 任意 (既定値)
-DECO_HOST=http://172.16.1.1
-ACCOUNT=admin        # 署名 hash に使うローカルアカウント名 (通常 admin のまま)
-VERIFY_SSL=false
-TIMEOUT=30
+`fnox.toml` の暗号文はリポジトリ管理者の鍵でしか復号できません。ほかの環境では、git 管理外の `fnox.local.toml` に
+自分の age の公開鍵と秘密鍵の場所を書き、そこへ `PASSWORD` を登録します。`fnox.local.toml` の値は `fnox.toml` より優先されます。
+
+```bash
+mkdir -p ~/.config/fnox
+mise x age -- age-keygen -o ~/.config/fnox/deco.txt   # 表示された公開鍵 (age1...) を下の recipients に書く
+cat > fnox.local.toml <<'TOML'
+[providers.age]
+type = "age"
+recipients = ["<age-keygen が表示した公開鍵>"]
+key_file = "~/.config/fnox/deco.txt"
+TOML
+mise exec -- fnox -c ./fnox.local.toml set PASSWORD --provider age
 ```
+
+接続先の Deco の URL (`DECO_HOST`) は `mise.toml` の `[env]` で設定します。ほかの設定値にはアプリ側に既定値があり、
+変えるときだけ環境変数で渡します。
+
+| 変数         | 既定値  | 説明                                     |
+| ------------ | ------- | ---------------------------------------- |
+| `ACCOUNT`    | `admin` | 署名 hash に使うローカル管理アカウント名 |
+| `VERIFY_SSL` | `false` | HTTPS 時に証明書を検証するか             |
+| `TIMEOUT`    | `30`    | ルーターへの HTTP タイムアウト (秒)      |
 
 ## 起動
 
 ```bash
-mise run dev   # = uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000
+mise run dev   # PASSWORD を fnox で復号し、uvicorn を --reload 付きで起動する
 ```
 
 - Swagger UI: http://127.0.0.1:8000/docs
@@ -53,11 +77,12 @@ mise run dev   # = uv run uvicorn main:app --reload --app-dir src --host 127.0.0
 
 ```bash
 mise run build-image   # docker build -t deco-be85-api:latest .
-mise run run-image     # docker run --rm -p 8000:8000 --env-file .env deco-be85-api:latest
+mise run run-image     # PASSWORD を fnox で復号し、環境変数を渡して docker run する
 ```
 
-多段ビルド (`uv` ビルダ → `python:slim` ランナー、非 root 実行)。認証情報は
-`--env-file .env` などで実行時に注入します (イメージには含めません)。
+多段ビルド (`uv` ビルダ → `python:slim` ランナー、非 root 実行)。`PASSWORD` と `DECO_HOST` はイメージに含めず、
+実行時に環境変数で渡します。mise を使わずに起動する場合 (docker compose 等) は、`PASSWORD` と `DECO_HOST` を
+直接渡せば fnox は要りません。
 
 ## エンドポイント
 
@@ -217,7 +242,7 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 - [commitlint](https://commitlint.js.org/): commit message を
   [Conventional Commits](https://www.conventionalcommits.org/) で検査する commit-msg hook (`commitlint` hook)。
   ルールは `commitlint.config.mjs`。prek が node を自前で用意するため、リポジトリに node は不要です。
-- [fnox](https://fnox.jdx.dev/): secret manager。`fnox.toml` の `[daemon]` は解決済みの secret をメモリに
+- [fnox](https://fnox.jdx.dev/): secret manager。`PASSWORD` を age で暗号化して `fnox.toml` に持ちます。`[daemon]` は解決済みの secret をメモリに
   キャッシュする daemon を有効化し、`idle_timeout` (12h) 無操作で終了させる設定です。
 
 `.gitignore` はホワイトリスト方式 (`*` で全て無視し、`!` で許可したものだけを追跡する) です。
@@ -540,7 +565,7 @@ Check formatting (ruff format --check), lint (ruff check) and types (ty check)
 
 - **Usage:** `run-image`
 
-Run the Docker image on port 8000 with .env passed via --env-file
+Run the Docker image on port 8000 with PASSWORD from fnox and the other settings from the environment
 
 ## `template-diff`
 

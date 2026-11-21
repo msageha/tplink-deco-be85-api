@@ -3,11 +3,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # .env に残っている未使用のキー (USERNAME など) で起動が止まらないよう extra は無視する。
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # 必須の値が欠けたときの validation エラーには入力値の一覧が付き、PASSWORD がログに平文で出るので隠す。
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     password: str = Field(description="Deco の管理パスワード (TP-Link ID のパスワード)")
-    deco_host: str = Field(default="http://172.16.1.1", description="Deco の URL")
+    deco_host: str = Field(description="Deco の URL")
     account: str = Field(
         default="admin", description="署名 hash に使うローカル管理アカウント名"
     )
