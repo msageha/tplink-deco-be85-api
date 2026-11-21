@@ -23,29 +23,49 @@ mise install  # ツールをインストールし、uv sync と git hooks のセ
 旧 hook を置き換えてください。置き換えないと prek が旧 hook (`.git/hooks/pre-commit.legacy`) も実行し、
 `uv sync` で削除された pre-commit package を呼んで commit が失敗します。
 
-Deco の管理パスワード (TP-Link ID のパスワード) は [fnox](https://fnox.jdx.dev/) で age 暗号化して `fnox.toml` に
-保存します。復号に使う age の秘密鍵は 1Password の `Private` vault の `age-identity` から取るので、
-[1Password CLI](https://developer.1password.com/docs/cli/) (`op`) をインストールしてサインインしておく必要があります。
+Deco の管理パスワード (TP-Link ID のパスワード) は [fnox](https://fnox.jdx.dev/) で age 暗号化し、`fnox.toml` の
+`PASSWORD` に保存しています。`mise run dev` / `mise run run-image` は `fnox exec` で復号した値を環境変数 `PASSWORD`
+としてアプリに渡し、復号できなければ起動しません。
+
+復号に使う age の秘密鍵は、リポジトリ管理者の 1Password (`Private` vault の `age-identity`) から
+[1Password CLI](https://developer.1password.com/docs/cli/) (`op`) で読みます。`op` をインストールしてサインインしておいてください。
+復号のたびに 1Password の承認 (Touch ID 等) を求められることがあります。
+
+パスワードを変えたときは、リポジトリ管理者が次のコマンドで登録し直します (入力は表示されません)。`-c ./fnox.toml` は
+`fnox.local.toml` を読まずに `fnox.toml` の鍵で暗号化させるために付けます。
 
 ```bash
-mise exec -- fnox set PASSWORD   # 入力は表示されない
+mise exec -- fnox -c ./fnox.toml set PASSWORD
 ```
 
-`mise run dev` / `mise run run-image` は `fnox exec --` 経由で `PASSWORD` を環境変数としてアプリに渡します。
+`fnox.toml` の暗号文はリポジトリ管理者の鍵でしか復号できません。ほかの環境では、git 管理外の `fnox.local.toml` に
+自分の age の公開鍵と秘密鍵の場所を書き、そこへ `PASSWORD` を登録します。`fnox.local.toml` の値は `fnox.toml` より優先されます。
 
-非 secret の設定値には既定値があり、変えたいときだけ `mise.local.toml` (git 管理外) の `[env]` に書きます。
+```bash
+mkdir -p ~/.config/fnox
+mise x age -- age-keygen -o ~/.config/fnox/deco.txt   # 表示された公開鍵 (age1...) を下の recipients に書く
+cat > fnox.local.toml <<'TOML'
+[providers.age]
+type = "age"
+recipients = ["<age-keygen が表示した公開鍵>"]
+key_file = "~/.config/fnox/deco.txt"
+TOML
+mise exec -- fnox -c ./fnox.local.toml set PASSWORD --provider age
+```
 
-| 変数         | 既定値              | 説明                                     |
-| ------------ | ------------------- | ---------------------------------------- |
-| `DECO_HOST`  | `http://172.16.1.1` | Deco の URL                              |
-| `ACCOUNT`    | `admin`             | 署名 hash に使うローカル管理アカウント名 |
-| `VERIFY_SSL` | `false`             | HTTPS 時に証明書を検証するか             |
-| `TIMEOUT`    | `30`                | ルーターへの HTTP タイムアウト (秒)      |
+接続先の Deco の URL (`DECO_HOST`) は `mise.toml` の `[env]` で設定します。ほかの設定値にはアプリ側に既定値があり、
+変えるときだけ環境変数で渡します。
+
+| 変数         | 既定値  | 説明                                     |
+| ------------ | ------- | ---------------------------------------- |
+| `ACCOUNT`    | `admin` | 署名 hash に使うローカル管理アカウント名 |
+| `VERIFY_SSL` | `false` | HTTPS 時に証明書を検証するか             |
+| `TIMEOUT`    | `30`    | ルーターへの HTTP タイムアウト (秒)      |
 
 ## 起動
 
 ```bash
-mise run dev   # = fnox exec -- uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000
+mise run dev   # PASSWORD を fnox で復号し、uvicorn を --reload 付きで起動する
 ```
 
 - Swagger UI: http://127.0.0.1:8000/docs
@@ -57,11 +77,12 @@ mise run dev   # = fnox exec -- uv run uvicorn main:app --reload --app-dir src -
 
 ```bash
 mise run build-image   # docker build -t deco-be85-api:latest .
-mise run run-image     # fnox exec -- docker run --rm -p 8000:8000 -e PASSWORD -e DECO_HOST ... deco-be85-api:latest
+mise run run-image     # PASSWORD を fnox で復号し、環境変数を渡して docker run する
 ```
 
-多段ビルド (`uv` ビルダ → `python:slim` ランナー、非 root 実行)。認証情報は
-`-e PASSWORD` などで実行時に環境変数として注入します (イメージには含めません)。
+多段ビルド (`uv` ビルダ → `python:slim` ランナー、非 root 実行)。`PASSWORD` と `DECO_HOST` はイメージに含めず、
+実行時に環境変数で渡します。mise を使わずに起動する場合 (docker compose 等) は、`PASSWORD` と `DECO_HOST` を
+直接渡せば fnox は要りません。
 
 ## エンドポイント
 

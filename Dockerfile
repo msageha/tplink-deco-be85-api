@@ -21,12 +21,11 @@ COPY src /app/src
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH=/app/src \
-    PYTHONUNBUFFERED=1 \
-    DECO_HOST=http://172.16.1.1
+    PYTHONUNBUFFERED=1
 
 # hadolint DL3066: 数値 UID にすると実行環境側が非 root を検証できる (useradd の --uid と同じ値)
 USER 10001
 EXPOSE 8000
 
-# 認証情報は実行時に環境変数 PASSWORD で渡す (mise run run-image は fnox exec -- docker run -e PASSWORD ...)。
+# PASSWORD と DECO_HOST (必須) はイメージに含めず、実行時に環境変数で渡す。
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

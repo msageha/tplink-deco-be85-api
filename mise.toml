@@ -14,19 +14,14 @@ hadolint = "2.15.1"
 shellcheck = "0.11.0"
 
 [env]
-# 非 secret の設定値は次の通りで、アプリ側 (src/settings.py) に既定値があるので、
-# 変えたい場合だけ mise.local.toml (git 管理外) の [env] に定義する。
-#   DECO_HOST  = "http://172.16.1.1"  — Deco の URL
-#   ACCOUNT    = "admin"              — 署名 hash に使うローカル管理アカウント名。通常は admin のまま
-#   VERIFY_SSL = "false"              — HTTPS 時に証明書を検証するか
-#   TIMEOUT    = "30"                 — ルーターへの HTTP タイムアウト (秒)
-#
+DECO_HOST = "http://172.16.1.1"
+
 # secret (PASSWORD: Deco の管理パスワード) は fnox.toml で管理する。mise run dev / run-image は
-# fnox exec -- 経由でアプリに環境変数として供給する。
+# fnox exec で復号してアプリに環境変数として渡す (復号できなければ起動しない)。
 
 [tasks.dev]
 description = "Run the API server with auto-reload on http://127.0.0.1:8000"
-run = "fnox exec -- uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000"
+run = "fnox exec --only PASSWORD --if-missing error -- uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000"
 
 [tasks.test]
 description = "Run pytest under coverage and print the report"
@@ -53,8 +48,8 @@ run = "docker build -t deco-be85-api:latest ."
 
 [tasks.run-image]
 description = "Run the Docker image on port 8000 with PASSWORD from fnox and the other settings from the environment"
-# -e NAME (値なし) は設定されている変数だけを渡すので、未設定の変数はイメージとアプリの既定値になる
-run = "fnox exec -- docker run --rm -p 8000:8000 -e PASSWORD -e DECO_HOST -e ACCOUNT -e VERIFY_SSL -e TIMEOUT deco-be85-api:latest"
+# -e NAME (値なし) は設定されている変数だけを渡すので、未設定の ACCOUNT / VERIFY_SSL / TIMEOUT はアプリ (src/settings.py) の既定値になる
+run = "fnox exec --only PASSWORD --if-missing error -- docker run --rm -p 8000:8000 -e PASSWORD -e DECO_HOST -e ACCOUNT -e VERIFY_SSL -e TIMEOUT deco-be85-api:latest"
 
 [tasks.clean]
 description = "Remove caches and coverage artifacts"
