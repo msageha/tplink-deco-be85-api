@@ -31,21 +31,20 @@ def _named_items(
         raw = list(cast("dict[str, Any]", raw).values())
     if not isinstance(raw, list):
         raise DecoError(f"Unexpected '{key}' in Deco response: not a list")
-    checked: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for entry in cast("list[object]", raw):
         if not isinstance(entry, dict):
             raise DecoError(
                 f"Unexpected '{key}' in Deco response: not a list of objects"
             )
-        checked.append(cast("dict[str, Any]", entry))
-    for item in checked:
+        item = cast("dict[str, Any]", entry)
         for name in names:
             value = item.get(name)
-            if not isinstance(value, str):
-                continue
-            with suppress(ValueError):
-                item[name] = b64decode(value, validate=True).decode()
-    return checked
+            if isinstance(value, str):
+                with suppress(ValueError):
+                    item[name] = b64decode(value, validate=True).decode()
+        items.append(item)
+    return items
 
 
 def _numeric_code(envelope: dict[str, Any]) -> int | None:
@@ -198,7 +197,7 @@ class DecoClient:
             else None
         )
         if (
-            _numeric_code(envelope) not in {0, None}
+            ("error_code" in envelope and _numeric_code(envelope) != 0)
             or not isinstance(stok, str)
             or not stok
         ):
@@ -234,13 +233,15 @@ class DecoClient:
             envelope = resp.json()
         except ValueError:
             envelope = None
-        # セッション切れはログイン画面の HTML か 401/403 で返る。壊れた JSON などを含めると、
-        # 適用済みかもしれない write を再送してしまうので、それ以外は再送しない。
+        # セッション切れは 401/403 か、JSON でないログイン画面の HTML で返る。ほかの応答 (Content-Type
+        # が HTML でも本文が JSON のもの、HTML でない壊れた本文) は操作が適用されたか分からず、
+        # 再送すると write を二重に適用しうるので、再送しない。
         expired = resp.status_code in {
             HTTPStatus.UNAUTHORIZED,
             HTTPStatus.FORBIDDEN,
         } or (
             resp.status_code == HTTPStatus.OK
+            and envelope is None
             and resp.headers.get("content-type", "").startswith("text/html")
         )
         if expired:
@@ -256,7 +257,6 @@ class DecoClient:
             self._cipher = None
             return self._send(path, body=body, retry=False)
         if not isinstance(envelope, dict):
-            # 操作が適用されたか分からないので、write を二重に適用しうる再送はしない。
             raise DecoError(
                 f"Deco returned HTTP {resp.status_code} without an envelope for '{path}'"
             )

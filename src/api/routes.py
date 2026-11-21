@@ -83,7 +83,7 @@ async def dashboard(service: Service) -> DashboardSummary:
         cpu_usage=performance.get("cpu_usage"),
         mem_usage=performance.get("mem_usage"),
         deco_count=len(decos),
-        online_clients=sum(1 for c in clients if c.get("online")),
+        online_clients=sum(1 for c in clients if ClientDevice.model_validate(c).online),
         decos=[DecoNode.model_validate(d) for d in decos],
     )
 
@@ -353,12 +353,13 @@ async def reboot(*, body: RebootRequest, service: Service) -> dict[str, Any]:
     macs = body.macs
     if not macs:
         decos = await service.run(service.client.get_device_list)
-        macs = [d["mac"] for d in decos if d.get("mac")]
-        # ルーターの値の型を、再起動を指示する前に確かめる。
-        if not all(isinstance(mac, str) for mac in macs):
+        found = [d.get("mac") for d in decos]
+        # 型の違う値 (0 など) を無い MAC と同じに扱って黙って対象から外さないよう、絞り込む前に確かめる。
+        if not all(mac is None or isinstance(mac, str) for mac in found):
             raise DecoError(
                 "Deco returned a device list with a MAC that is not a string"
             )
+        macs = [mac for mac in found if mac]
     if not macs:
         raise HTTPException(status_code=404, detail="No Deco units found to reboot")
     await service.run(service.client.reboot, macs)
