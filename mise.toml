@@ -40,6 +40,13 @@ run = [
   "uv run ty check",
 ]
 
+# --persona auditor: false positive になりうるものを含め、全 finding を失敗にする。
+# --strict-collection: 解析できない入力を warning で飛ばさず失敗にする。
+# online audit (impostor-commit 等) は ZIZMOR_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN のどれかがあるときだけ走る
+[tasks.zizmor]
+description = "Audit GitHub Actions workflows and .pre-commit-config.yaml with zizmor (online audits need ZIZMOR_GITHUB_TOKEN)"
+run = "zizmor --persona auditor --strict-collection ."
+
 [tasks.format]
 description = "Format python sources with ruff"
 run = "uv run ruff format ."

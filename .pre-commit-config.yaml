@@ -32,7 +32,7 @@ repos:
         files: ^mise\.toml$
         pass_filenames: false
       - id: dprint-fmt
-        name: Format json/yaml/markdown/toml with dprint
+        name: Format json/yaml/markdown/toml/Dockerfile with dprint
         language: system
         # --allow-no-files: 渡されたファイルがすべて dprint.json の excludes 対象のとき
         # (例: uv.lock のみの commit) に exit 14 (No files found) で失敗しないようにする
@@ -43,18 +43,18 @@ repos:
         language: system
         entry: mise exec -- hadolint
         files: (^|/)([^/]+\.)?Dockerfile$
+      # --force-exclude: prek はファイルを明示して渡すため、これが無いと typos.toml の extend-exclude が効かない
       - id: typos
         name: Check spelling with typos
         language: system
-        entry: mise exec -- typos
-      # auditor persona: false positive を含めて全 finding を出す最も厳しい設定。
-      # --strict-collection: 解析できない入力を黙って飛ばさず失敗にする。
-      # token が無いと online audit (impostor-commit 等) は走らない。CI は ci.yaml の専用 step で実行する
+        entry: mise exec -- typos --force-exclude
+      # token が無い環境では online audit が走らない。CI は ci.yaml の専用 step で token 付きで実行する
       - id: zizmor
         name: Audit GitHub Actions workflows and hook config with zizmor
         language: system
-        entry: mise exec -- zizmor --persona auditor --strict-collection .
-        files: ^(\.github/|\.pre-commit-config\.yaml$)
+        entry: mise run zizmor
+        # mise.toml は zizmor の版と option (mise run zizmor) を持つ
+        files: ^(\.github/|\.pre-commit-config\.yaml$|mise\.toml$)
         pass_filenames: false
       # ruff / ty は uv.lock のバージョンで実行し、pre-commit 側と二重管理しない
       - id: ruff-format

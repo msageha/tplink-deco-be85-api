@@ -8,7 +8,8 @@ endpoint 一覧・ログインフロー・実機で確認した luci form の挙
 - `mise install`: ツールのインストール、`uv sync --locked`、git hooks (pre-commit / commit-msg) のセットアップ。旧 pre-commit (`uv run pre-commit install`) の hook が残る clone では `mise exec -- prek install --force` で置き換える。
 - `mise run test`: coverage 付き pytest。オフラインで完結し、実機には触れない。
 - `mise run lint`: ruff format --check / ruff check / ty check。
-- `mise exec -- prek run --all-files`: 全 hook (dprint、actionlint、zizmor、hadolint、typos、ruff、ty、gitleaks 等) を実行する。CI の `prek` job と同じ検証だが、zizmor の online audit は token があるときだけ走る (README「開発」参照)。
+- `mise exec -- prek run --all-files`: pre-commit stage の全 hook (dprint、actionlint、zizmor、hadolint、typos、ruff、ty、gitleaks 等) を全ファイルに実行する。CI の `Run prek` step と同じ検証 (commit-msg stage の commitlint は含まない)。
+- `mise run zizmor`: zizmor の監査。online audit (impostor-commit 等) は `ZIZMOR_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` のどれも無いと走らず、その環境では prek の zizmor hook も offline の audit だけで成功する。`.github/`・`.pre-commit-config.yaml`・`mise.toml` を変えたら `ZIZMOR_GITHUB_TOKEN=$(gh auth token) mise run zizmor` で CI と同じ範囲を確かめ、出力に `running in offline mode` の warning が無いことを見る (出たら `gh auth status` を確かめる)。
 - `mise run dev`: 開発サーバー (http://127.0.0.1:8000)。`PASSWORD` は `fnox.toml` (age で暗号化) を `fnox exec` が復号して渡し、`DECO_HOST` は `mise.toml` の `[env]` が渡す。`fnox.toml` の鍵で復号する環境では 1Password CLI (`op`) で age の秘密鍵を読むので、1Password の承認 (Touch ID 等) を待って止まることがある。
 - `mise run docs`: `mise.toml` の tasks を変更したあと README のタスク一覧を同期する。
 
@@ -23,6 +24,7 @@ endpoint 一覧・ログインフロー・実機で確認した luci form の挙
 
 - commit message は Conventional Commits (`type(scope): subject`)。commit-msg hook の commitlint が検査する。
 - json / yaml / markdown / toml / Dockerfile は dprint、python は ruff で整形する。手で整えず `prek run --all-files` に任せる。
+- lint の指摘は原因を直し、設定 (`.hadolint.yaml` の severity・`trustedRegistries`・`label-schema`、hook や `mise run zizmor` の option) を緩めて通さない。原因を直せない誤検知だけを除外する: hadolint は `.hadolint.yaml` の `ignored` (Dockerfile 内の `# hadolint ignore=` は効かない)、typos は `typos.toml` の `[default.extend-words]`、zizmor は該当行の `# zizmor: ignore[<audit 名>]`。
 - ruff / ty は `uv run --locked` で `uv.lock` のバージョンを使う。pre-commit 側にバージョンを持たない。
 - `.gitignore` はホワイトリスト方式。新しいファイルを追跡するときは対応する `!` の行を追記する。
 - ツールは `mise.toml` に exact version で pin し、変更したら `mise lock` で `mise.lock` を追従させる。Python 本体は uv が管理する。
