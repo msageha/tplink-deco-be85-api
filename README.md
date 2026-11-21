@@ -307,8 +307,9 @@ mise exec -- gitleaks git --redact -v .  # コミット履歴全体のシーク�
 - `.pre-commit-config.yaml` の hook `rev` と、`language: node` の hook の `additional_dependencies`。
 - workflow の `uses:` の commit SHA (バージョンはコメントで併記し、Renovate が両方を更新する)。
 - `dprint.json` の plugin URL と checksum (`customManagers`)。
-- `Dockerfile` のベースイメージ (uv・distroless) の tag と digest。Python の patch version は uv が決めるので、uv のイメージの更新に
-  伴って上がります。minor version (`UV_PYTHON`) は手で書き換えます。GHCR・GCR は公開日時を返さず `minimumReleaseAge` を
+- `Dockerfile` のベースイメージ。uv は tag (uv の版) と digest、distroless は `nonroot` tag の digest を更新します。Python の patch version は
+  uv が決めるので、uv のイメージの更新に伴って上がります。Python の minor version (`UV_PYTHON`) と distroless の Debian の世代
+  (`cc-debian13` のイメージ名) は手で書き換えます。GHCR・GCR は公開日時を返さず `minimumReleaseAge` を
   判定できないので、この 2 つは 7 日の猶予期間を置かずに更新します (`minimumReleaseAgeBehaviour: timestamp-optional`)。
   Renovate の Docker datasource が公開日時を取得できるのは Docker Hub だけで、この設定は公開日時が無い更新にだけ効きます。
   uv の minor / patch は他の依存と同じ PR で自動マージされ、tag を変えない digest の更新 (distroless の OS パッケージの修正等) は
