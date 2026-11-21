@@ -13,21 +13,21 @@ def _hex_key(bits: int) -> tuple[RSA.RsaKey, tuple[str, str]]:
 
 def test_rsa_encrypt_is_decryptable() -> None:
     key, (modulus, exponent) = _hex_key(1024)
-    cipher_hex = rsa_encrypt("s3cr3t-pass", modulus, exponent)
+    cipher_hex = rsa_encrypt("s3cr3t-pass", public_key=(modulus, exponent))
     recovered = PKCS1_v1_5.new(key).decrypt(a2b_hex(cipher_hex), b"FAIL")
     assert recovered == b"s3cr3t-pass"
 
 
 def test_aes_round_trip() -> None:
     _, sign_key = _hex_key(1024)
-    cipher = SessionCipher(sign_key, seq=1, cred_hash="0" * 32)
+    cipher = SessionCipher(sign_key=sign_key, seq=1, cred_hash="0" * 32)
     plain = '{"operation":"read","params":{"device_mac":"default"}}'
     assert cipher.decrypt(cipher.encrypt(plain)["data"]) == plain
 
 
 def test_signature_fields_and_chunking() -> None:
     key, sign_key = _hex_key(1024)  # 128 byte modulus -> 256 hex chars per RSA block
-    cipher = SessionCipher(sign_key, seq=100, cred_hash="a" * 32)
+    cipher = SessionCipher(sign_key=sign_key, seq=100, cred_hash="a" * 32)
     decryptor = PKCS1_v1_5.new(key)
 
     def decrypt_sign(sign: str) -> dict[str, str]:

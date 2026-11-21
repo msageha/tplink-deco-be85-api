@@ -2,7 +2,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .models import (
+from api.models import (
     ClientDevice,
     CloudDeviceInfo,
     DashboardSummary,
@@ -19,7 +19,7 @@ from .models import (
     WirelessPower,
     WlanBandToggle,
 )
-from .service import DecoService
+from api.service import DecoService
 
 router = APIRouter(prefix="/api")
 
@@ -28,7 +28,7 @@ def _get_service(request: Request) -> DecoService:
     return request.app.state.deco
 
 
-Service = Annotated[DecoService, Depends(_get_service)]
+type Service = Annotated[DecoService, Depends(_get_service)]
 
 
 @router.get("/health", tags=["system"])
@@ -59,8 +59,9 @@ async def dashboard(service: Service) -> DashboardSummary:
     decos = await service.run(service.client.get_device_list)
     clients = await service.run(service.client.get_client_list)
     performance = await service.run(service.client.get_performance)
-    wan = (await service.run(service.client.get_wan)).get("wan") or {}
-    wan_ip = (wan.get("ip_info") or {}).get("ip")
+    wan: dict[str, Any] = (await service.run(service.client.get_wan)).get("wan") or {}
+    ip_info: dict[str, Any] = wan.get("ip_info") or {}
+    wan_ip = ip_info.get("ip")
     return DashboardSummary(
         internet_online=bool(wan_ip),
         connection_type=wan.get("dial_type"),
@@ -81,7 +82,7 @@ async def devices(service: Service) -> list[DecoNode]:
 
 
 @router.get("/clients", tags=["clients"])
-async def clients(service: Service, online_only: bool = False) -> list[ClientDevice]:
+async def clients(*, service: Service, online_only: bool = False) -> list[ClientDevice]:
     """接続クライアント一覧。"""
     raw = await service.run(service.client.get_client_list)
     items = [ClientDevice.model_validate(c) for c in raw]
@@ -178,28 +179,31 @@ async def wireless_get(service: Service) -> dict[str, Any]:
 
 
 @router.post("/wireless", tags=["wireless"])
-async def wireless_toggle(body: WlanBandToggle, service: Service) -> dict[str, Any]:
+async def wireless_toggle(*, body: WlanBandToggle, service: Service) -> dict[str, Any]:
     """band 単位で Wi-Fi を ON / OFF する。接続中のクライアントは一時的に切断される。"""
     settings = {"enable": body.enable}
-    await service.run(service.client.set_wlan, body.band, body.network, settings)
+    await service.run(
+        service.client.set_wlan, band=body.band, network=body.network, settings=settings
+    )
     return {"updated": {body.band: {body.network: settings}}}
 
 
 @router.post("/wireless/config", tags=["wireless"])
 async def wireless_config(
-    body: WirelessConfigUpdate, service: Service
+    *, body: WirelessConfigUpdate, service: Service
 ) -> dict[str, Any]:
-    """band × network の Wi-Fi 設定 (SSID / パスワード / channel など) を変更する。
+    """
+    band と network の組 1 つ分の Wi-Fi 設定 (SSID / パスワード / channel など) を変更する。
 
     ssid / password は平文で受け取り、サーバー側で base64 化してルーターへ送る。
     接続中のクライアントは一時的に切断される。
     """
     settings = body.settings.model_dump(exclude_none=True)
     result = await service.run(
-        service.client.set_wlan, body.band, body.network, settings
+        service.client.set_wlan, band=body.band, network=body.network, settings=settings
     )
     if "password" in settings:
-        settings["password"] = "***"
+        settings["password"] = "***"  # noqa: S105 - 応答に平文のパスワードを返さないための伏せ字
     return {"updated": {body.band: {body.network: settings}}, "result": result}
 
 
@@ -294,17 +298,21 @@ async def system_log_types(service: Service) -> Any:
 
 @router.get("/system/log", tags=["system"])
 async def system_log(
+    *,
     service: Service,
     level: Annotated[int, Query(ge=1, le=8)] = 8,
     index: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 100,
 ) -> dict[str, Any]:
-    """システムログを 1 ページ分取得する。
+    """
+    システムログを 1 ページ分取得する。
 
     level は /system/log-types の value (8 = ALL)。index は 0 始まりのページ番号、limit は
     1 ページの件数で、応答の totalNum はその limit での総ページ数。
     """
-    return await service.run(service.client.get_system_log, level, index, limit)
+    return await service.run(
+        service.client.get_system_log, level=level, index=index, limit=limit
+    )
 
 
 @router.get("/system/firmware", tags=["system"])
@@ -315,7 +323,7 @@ async def system_firmware(service: Service) -> list[FirmwareStatus]:
 
 
 @router.post("/reboot", tags=["system"])
-async def reboot(body: RebootRequest, service: Service) -> dict[str, Any]:
+async def reboot(*, body: RebootRequest, service: Service) -> dict[str, Any]:
     """Deco を再起動する。macs 省略時は全ノード。"""
     if not body.confirm:
         raise HTTPException(
@@ -332,9 +340,12 @@ async def reboot(body: RebootRequest, service: Service) -> dict[str, Any]:
 
 
 @router.post("/raw", tags=["raw"])
-async def raw(body: RawRequest, service: Service) -> dict[str, Any]:
-    """任意の Deco エンドポイントを呼び、復号した envelope をそのまま返す。
+async def raw(*, body: RawRequest, service: Service) -> dict[str, Any]:
+    """
+    任意の Deco エンドポイントを呼び、復号した envelope をそのまま返す。
 
     write 系の operation はルーター設定を変更できるので注意。
     """
-    return await service.run(service.client.raw, body.path, body.operation, body.params)
+    return await service.run(
+        service.client.raw, body.path, operation=body.operation, params=body.params
+    )

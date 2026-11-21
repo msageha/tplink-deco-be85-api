@@ -15,4 +15,5 @@ class Settings(BaseSettings):
     timeout: int = Field(default=30, description="ルーターへの HTTP タイムアウト (秒)")
 
 
-settings = Settings()
+# 必須の password と deco_host は環境変数から読む。pyright は pydantic-settings の読み込みを知らず、引数の不足と誤検知する。
+settings = Settings()  # pyright: ignore[reportCallIssue]

@@ -11,28 +11,30 @@ from Crypto.Util.Padding import pad, unpad
 _SIGN_CHUNK = 53
 
 
-def _public_key(modulus_hex: str, exponent_hex: str) -> RSA.RsaKey:
+def _public_key(key: tuple[str, str]) -> RSA.RsaKey:
+    modulus_hex, exponent_hex = key
     return RSA.construct((int(modulus_hex, 16), int(exponent_hex, 16)))
 
 
-def rsa_encrypt(text: str, modulus_hex: str, exponent_hex: str) -> str:
-    key = PKCS1_v1_5.new(_public_key(modulus_hex, exponent_hex))
-    return key.encrypt(text.encode()).hex()
+def rsa_encrypt(text: str, *, public_key: tuple[str, str]) -> str:
+    cipher = PKCS1_v1_5.new(_public_key(public_key))
+    return cipher.encrypt(text.encode()).hex()
 
 
 class SessionCipher:
     """ログインセッション 1 つ分の AES 鍵 / IV と署名材料を持ち、本文の暗号化・署名・復号を行う。"""
 
-    def __init__(self, sign_key: tuple[str, str], seq: int, cred_hash: str) -> None:
+    def __init__(self, *, sign_key: tuple[str, str], seq: int, cred_hash: str) -> None:
         # Web UI と同じく、8 byte の乱数を hex 化した 16 文字をそのまま AES-128 の鍵 / IV にする。
         self._key = get_random_bytes(8).hex().encode()
         self._iv = get_random_bytes(8).hex().encode()
-        self._signer = PKCS1_v1_5.new(_public_key(*sign_key))
+        self._signer = PKCS1_v1_5.new(_public_key(sign_key))
         self._seq = seq
         self._cred_hash = cred_hash
 
     def encrypt(self, plaintext: str, *, login: bool = False) -> dict[str, str]:
-        """本文を暗号化し、フォームフィールド `sign` と `data` を返す。
+        """
+        本文を暗号化し、フォームフィールド `sign` と `data` を返す。
 
         署名は `h=<認証 hash>&s=<seq + 暗号文長>` を RSA 暗号化したもの。login 時だけ
         AES 鍵 / IV (`k=`, `i=`) を先頭に含めてルーターへ渡す。

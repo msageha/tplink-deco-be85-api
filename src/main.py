@@ -14,7 +14,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     service = DecoService(
         DecoClient(
             settings.deco_host,
-            settings.password,
+            password=settings.password,
             account=settings.account,
             verify_ssl=settings.verify_ssl,
             timeout=settings.timeout,

@@ -18,7 +18,9 @@ def test_raw_request_defaults() -> None:
 
 
 def test_raw_request_strips_leading_slash() -> None:
-    r = RawRequest(path="/admin/client?form=client_list", operation="read")
+    r = RawRequest.model_validate(
+        {"path": "/admin/client?form=client_list", "operation": "read"}
+    )
     assert r.path == "admin/client?form=client_list"
 
 
@@ -32,23 +34,29 @@ def test_raw_request_rejects_unsafe_paths(bad: str) -> None:
 
 def test_raw_request_rejects_unknown_operation() -> None:
     with pytest.raises(ValidationError):
-        RawRequest(path="admin/x?form=y", operation="destroy")
+        RawRequest.model_validate({"path": "admin/x?form=y", "operation": "destroy"})
 
 
 def test_wlan_toggle_enums() -> None:
-    t = WlanBandToggle(band="band5_1", network="guest", enable=False)
+    t = WlanBandToggle.model_validate(
+        {"band": "band5_1", "network": "guest", "enable": False}
+    )
     assert t.band is WifiBand.band5_1
     assert t.network is WifiNetwork.guest
 
     with pytest.raises(ValidationError):
-        WlanBandToggle(band="band9", network="host", enable=True)
+        WlanBandToggle.model_validate(
+            {"band": "band9", "network": "host", "enable": True}
+        )
 
 
 def test_wireless_config_requires_a_field() -> None:
     with pytest.raises(ValidationError):
-        WirelessConfigUpdate(band="band6", settings={})
+        WirelessConfigUpdate.model_validate({"band": "band6", "settings": {}})
 
 
 def test_wireless_config_rejects_unknown_field() -> None:
     with pytest.raises(ValidationError):
-        WirelessConfigUpdate(band="band6", settings={"foo": "bar"})
+        WirelessConfigUpdate.model_validate(
+            {"band": "band6", "settings": {"foo": "bar"}}
+        )
