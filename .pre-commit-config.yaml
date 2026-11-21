@@ -35,12 +35,12 @@ repos:
         files: ^(mise\.toml|README\.md)$
         pass_filenames: false
       - id: dprint-fmt
-        name: Format json/yaml/markdown/toml with dprint
+        name: Format json/yaml/markdown/toml/Dockerfile with dprint
         language: system
         # --allow-no-files: 渡されたファイルがすべて dprint.json の excludes 対象のとき
         # (例: uv.lock のみの commit) に exit 14 (No files found) で失敗しないようにする
         entry: mise exec -- dprint fmt --allow-no-files
-        types_or: [json, yaml, markdown, toml]
+        types_or: [json, yaml, markdown, toml, dockerfile]
       - id: actionlint
         name: Lint GitHub Actions workflows with actionlint
         language: system
@@ -52,6 +52,19 @@ repos:
         language: system
         entry: mise exec -- hadolint
         types: [dockerfile]
+      # --force-exclude: prek はファイルを明示して渡すため、これが無いと typos.toml の extend-exclude が効かない
+      - id: typos
+        name: Check spelling with typos
+        language: system
+        entry: mise exec -- typos --force-exclude
+      # token が無い環境では online audit が走らない。CI は ci.yaml の専用 step で token 付きで実行する
+      - id: zizmor
+        name: Audit GitHub Actions workflows and hook config with zizmor
+        language: system
+        entry: mise run zizmor
+        # mise.toml は zizmor の版と option (mise run zizmor) を持つ
+        files: ^(\.github/|\.pre-commit-config\.yaml$|mise\.toml$)
+        pass_filenames: false
       # ruff・import-linter・ty・pyright の設定は pyproject.toml にあり、版は uv.lock と mise.toml で決まるので、
       # format と lint は設定だけの変更でも実行する。
       - id: format

@@ -14,9 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# job 名がそのまま required status check の名前になる (README「GitHub リポジトリ設定」参照)。
+# job の name がそのまま required status check の名前になる (README「GitHub リポジトリ設定」参照)。
 jobs:
   prek:
+    name: prek
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,11 +30,21 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
 
+      # prek の zizmor hook は token が無く offline audit だけになるので、online audit
+      # (impostor-commit・known-vulnerable-actions 等) を含めてここで実行する。
+      # prek が .pre-commit-config.yaml の hook repo を取得・実行する前に、その参照を監査する。
+      # token は他の hook に渡さないよう、この step だけに渡す
+      - name: Run zizmor with online audits
+        run: mise run zizmor
+        env:
+          ZIZMOR_GITHUB_TOKEN: ${{ github.token }}
+
       # lint hook (mise run lint) は uv run --locked で動くため、uv.lock と pyproject.toml の不整合もここで失敗する
       - name: Run prek
         run: mise run pre-commit
 
   gitleaks:
+    name: gitleaks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -51,6 +62,7 @@ jobs:
         run: mise exec -- gitleaks git --redact -v .
 
   verify:
+    name: verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

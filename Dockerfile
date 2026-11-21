@@ -13,6 +13,9 @@ RUN uv sync --locked --no-dev
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runner
 
+LABEL org.opencontainers.image.source="https://github.com/msageha/tplink-deco-be85-api" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
 RUN useradd --create-home --uid 10001 appuser
 
 WORKDIR /app
