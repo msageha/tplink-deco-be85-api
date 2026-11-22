@@ -28,7 +28,7 @@ jobs:
 
       # mise.lock があるため `mise install --locked` になり、mise.toml との不整合はここで失敗する。
       - name: Install mise
-        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
 
       # prek の zizmor hook は token が無く offline audit だけになるので、online audit
       # (impostor-commit・known-vulnerable-actions 等) を含めてここで実行する。
@@ -56,7 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Install mise
-        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
 
       - name: Run gitleaks
         run: mise exec -- gitleaks git --redact -v .
@@ -72,7 +72,7 @@ jobs:
           persist-credentials: false
 
       - name: Install mise
-        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
 
       - name: Run tests
         run: mise run test
@@ -100,7 +100,7 @@ jobs:
       # check-image が使うのは runner の docker と curl だけなので、mise 本体だけを入れ、ツールの導入・キャッシュの
       # 復元・postinstall の hook (uv sync・git hooks の登録) を省く。
       - name: Install mise
-        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install: false
           cache: false
