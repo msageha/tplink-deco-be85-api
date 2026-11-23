@@ -1,6 +1,24 @@
 """TP-Link Deco ローカル API クライアント。FastAPI 層には依存しない。"""
 
+from deco.catalog import LUCI_OPERATIONS, TMP_OPERATIONS, LuciOperation, TmpOperation
 from deco.client import DecoClient
-from deco.exceptions import DecoAuthError, DecoConnectionError, DecoError
+from deco.exceptions import (
+    DecoAuthError,
+    DecoConnectionError,
+    DecoError,
+    DecoRequestTooLargeError,
+)
+from deco.tmp import TmpClient
 
-__all__ = ["DecoAuthError", "DecoClient", "DecoConnectionError", "DecoError"]
+__all__ = [
+    "LUCI_OPERATIONS",
+    "TMP_OPERATIONS",
+    "DecoAuthError",
+    "DecoClient",
+    "DecoConnectionError",
+    "DecoError",
+    "DecoRequestTooLargeError",
+    "LuciOperation",
+    "TmpClient",
+    "TmpOperation",
+]

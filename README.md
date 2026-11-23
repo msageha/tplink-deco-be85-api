@@ -23,23 +23,27 @@ mise install  # ツールをインストールし、uv sync と git hooks のセ
 旧 hook を置き換えてください。置き換えないと prek が旧 hook (`.git/hooks/pre-commit.legacy`) も実行し、
 `uv sync` で削除された pre-commit package を呼んで commit が失敗します。
 
-Deco の管理パスワード (TP-Link ID のパスワード) は [fnox](https://fnox.jdx.dev/) で age 暗号化し、`fnox.toml` の
-`PASSWORD` に保存しています。`mise run dev` / `mise run run-image` は `fnox exec` で復号した値を環境変数 `PASSWORD`
-としてアプリに渡し、復号できなければ起動しません。
+Deco の管理パスワード (TP-Link ID のパスワード) と、Deco のオーナーの TP-Link ID の email は
+[fnox](https://fnox.jdx.dev/) で age 暗号化し、`fnox.toml` の `PASSWORD` と `TPLINK_EMAIL` に保存しています。
+`mise run dev` / `mise run run-image` は `fnox exec` で復号した値を同名の環境変数としてアプリに渡し、
+復号できなければ起動しません。email は Deco アプリと同じ経路 (TMP、後述) の SSH の認証に使います。
+`TPLINK_EMAIL` を登録する前の checkout (`fnox.toml` に `PASSWORD` だけがある状態) では、次の手順で
+`TPLINK_EMAIL` を登録するまで `mise run dev` / `mise run run-image` は起動しません。
 
 復号に使う age の秘密鍵は、リポジトリ管理者の 1Password (`Private` vault の `age-identity`) から
 [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) で読みます。`op` をインストールしてサインインしておいてください。
 復号のたびに 1Password の承認 (Touch ID 等) を求められることがあります。
 
-パスワードを変えたときは、リポジトリ管理者が次のコマンドで登録し直します (入力は表示されません)。`-c ./fnox.toml` は
+値を変えたときは、リポジトリ管理者が次のコマンドで登録し直します (入力は表示されません)。`-c ./fnox.toml` は
 `fnox.local.toml` を読まずに `fnox.toml` の鍵で暗号化させるために付けます。
 
 ```bash
 mise exec -- fnox -c ./fnox.toml set PASSWORD
+mise exec -- fnox -c ./fnox.toml set TPLINK_EMAIL
 ```
 
 `fnox.toml` の暗号文はリポジトリ管理者の鍵でしか復号できません。ほかの環境では、git 管理外の `fnox.local.toml` に
-自分の age の公開鍵と秘密鍵の場所を書き、そこへ `PASSWORD` を登録します。`fnox.local.toml` の値は `fnox.toml` より優先されます。
+自分の age の公開鍵と秘密鍵の場所を書き、そこへ `PASSWORD` と `TPLINK_EMAIL` を登録します。`fnox.local.toml` の値は `fnox.toml` より優先されます。
 
 ```bash
 mkdir -p ~/.config/fnox
@@ -51,34 +55,37 @@ recipients = ["<age-keygen が表示した公開鍵>"]
 key_file = "~/.config/fnox/deco.txt"
 TOML
 mise exec -- fnox -c ./fnox.local.toml set PASSWORD --provider age
+mise exec -- fnox -c ./fnox.local.toml set TPLINK_EMAIL --provider age
 ```
 
 接続先の Deco の URL (`DECO_HOST`) は `mise.toml` の `[env]` で設定します。ほかの設定値にはアプリ側に既定値があり、
 変えるときだけ環境変数で渡します。
 
-| 変数         | 既定値  | 説明                                     |
-| ------------ | ------- | ---------------------------------------- |
-| `ACCOUNT`    | `admin` | 署名 hash に使うローカル管理アカウント名 |
-| `VERIFY_SSL` | `false` | HTTPS 時に証明書を検証するか             |
-| `TIMEOUT`    | `30`    | ルーターへの HTTP タイムアウト (秒)      |
+| 変数         | 既定値  | 説明                                       |
+| ------------ | ------- | ------------------------------------------ |
+| `ACCOUNT`    | `admin` | 署名 hash に使うローカル管理アカウント名   |
+| `VERIFY_SSL` | `false` | HTTPS 時に証明書を検証するか               |
+| `TIMEOUT`    | `30`    | ルーターへの HTTP・TMP のタイムアウト (秒) |
+| `TMP_PORT`   | `20001` | Deco の TMP (SSH) の port                  |
 
 ## 起動
 
 ```bash
-mise run dev   # PASSWORD を fnox で復号し、uvicorn を --reload 付きで起動する
+mise run dev   # PASSWORD と TPLINK_EMAIL を fnox で復号し、uvicorn を --reload 付きで起動する
 ```
 
 - Swagger UI: http://127.0.0.1:8000/docs
 - ルーターへのログインは遅延 (最初の API 呼び出し時)。401/403 やログイン画面 (非 JSON) が
   返ったら自動で再ログインして 1 回だけ再送します。
-- `DecoClient` はセッション状態を持つため、リクエストはサーバー側の lock で直列化されます。
+- TMP の SSH セッションも最初の `/api/app/...` の呼び出しで張り、使い回します。切れていたら次の呼び出しで張り直します。
+- luci と TMP のクライアントはセッション状態を持つため、それぞれのリクエストはサーバー側の lock で直列化されます。
 
 ### Docker
 
 ```bash
 mise run build-image   # docker build -t deco-be85-api:latest .
 mise run check-image   # build し、ダミーの設定・read-only で起動して /api/health が応答するのを確かめる (CI の image job と同じ)
-mise run run-image     # PASSWORD を fnox で復号し、環境変数を渡して docker run する
+mise run run-image     # PASSWORD と TPLINK_EMAIL を fnox で復号し、環境変数を渡して docker run する
 ```
 
 ランナーは shell やパッケージマネージャを持たない distroless (`gcr.io/distroless/cc-debian13:nonroot`) です。
@@ -92,53 +99,55 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
   `CMD-SHELL`、`command` の中のパイプや変数展開等) も動きません。compose の `healthcheck.test` は exec 形式で Python を呼びます
   (例: `["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]`)。
   中を調べるときは `docker run --rm --entrypoint python deco-be85-api:latest -c '<code>'` で起動します。
-- `PASSWORD` と `DECO_HOST` はイメージに含めず、実行時に環境変数で渡します。mise を使わずに起動する場合
-  (docker compose 等) は、`PASSWORD` と `DECO_HOST` を直接渡せば fnox は要りません。
+- `PASSWORD`・`TPLINK_EMAIL`・`DECO_HOST` はイメージに含めず、実行時に環境変数で渡します。mise を使わずに起動する場合
+  (docker compose 等) は、この 3 つを直接渡せば fnox は要りません。
 
 ## エンドポイント
 
-| Method | Path                           | 説明                                            |
-| ------ | ------------------------------ | ----------------------------------------------- |
-| GET    | `/api/health`                  | サーバー状態とログイン状況                      |
-| POST   | `/api/login`                   | 明示ログイン                                    |
-| POST   | `/api/logout`                  | ログアウト                                      |
-| GET    | `/api/dashboard`               | 概況 (回線 / CPU / メモリ / Deco 台数 / 接続数) |
-| GET    | `/api/devices`                 | Deco ユニット (メッシュノード) 一覧             |
-| GET    | `/api/clients`                 | 接続クライアント一覧 (`?online_only=true`)      |
-| GET    | `/api/clients/blocked`         | ブロック中クライアント一覧                      |
-| GET    | `/api/network/wan`             | WAN IPv4 ステータス                             |
-| GET    | `/api/network/internet`        | インターネット接続情報 (IPv4 / IPv6)            |
-| GET    | `/api/network/lan`             | LAN / DHCP DNS / WAN IP                         |
-| GET    | `/api/network/ipv6`            | IPv6 有効状態                                   |
-| GET    | `/api/network/performance`     | CPU / メモリ使用率                              |
-| GET    | `/api/network/mac-clone`       | MAC クローン設定                                |
-| GET    | `/api/network/wan-mode`        | WAN ポートの動作モード                          |
-| GET    | `/api/network/dhcp-dial`       | WAN の DHCP 接続設定 (unicast)                  |
-| GET    | `/api/network/igmp`            | IGMP (マルチキャスト) 設定                      |
-| GET    | `/api/network/fast-xmit`       | fast xmit の有効状態                            |
-| GET    | `/api/network/vlan`            | VLAN (IPTV) 設定                                |
-| GET    | `/api/network/ddns`            | DDNS の有効状態とドメイン                       |
-| GET    | `/api/wireless`                | Wi-Fi 設定の取得                                |
-| POST   | `/api/wireless`                | バンド別 Wi-Fi の ON/OFF                        |
-| POST   | `/api/wireless/config`         | Wi-Fi 設定変更 (SSID / パスワード / enable 等)  |
-| GET    | `/api/wireless/power`          | 電波 (DFS サポート等)                           |
-| GET    | `/api/wireless/beamforming`    | beamforming の有効状態                          |
-| GET    | `/api/wireless/operation-mode` | 無線の動作モード (AP / router)                  |
-| GET    | `/api/wireless/bridge`         | ブリッジ / PLC 状態                             |
-| GET    | `/api/wireless/roaming`        | 802.11r 高速ローミングの有効状態                |
-| GET    | `/api/wireless/bandwidth`      | 160MHz 幅 (HT160) の有効状態                    |
-| GET    | `/api/device/mode`             | 動作モード (region / workmode / sysmode)        |
-| GET    | `/api/device/time`             | 時刻・タイムゾーン設定                          |
-| GET    | `/api/device/speedtest`        | 直近のスピードテスト結果                        |
-| GET    | `/api/cloud/device-info`       | クラウド連携情報 (model / role 等)              |
-| GET    | `/api/cloud/login-status`      | TP-Link ID のログイン状態                       |
-| GET    | `/api/system/component-info`   | ERP / 省電力等のコンポーネント情報              |
-| GET    | `/api/system/switch-list`      | UI 機能スイッチ                                 |
-| GET    | `/api/system/log-types`        | ログ種別 (`/api/system/log` の `level`)         |
-| GET    | `/api/system/log`              | システムログ (`?level=&index=&limit=`)          |
-| GET    | `/api/system/firmware`         | ファームウェア更新の有無 (cloud に問い合わせ)   |
-| POST   | `/api/reboot`                  | Deco の再起動 (`confirm=true` 必須)             |
-| POST   | `/api/raw`                     | 任意エンドポイントへの汎用パススルー            |
+| Method | Path                                       | 説明                                            |
+| ------ | ------------------------------------------ | ----------------------------------------------- |
+| GET    | `/api/health`                              | サーバー状態とログイン状況                      |
+| POST   | `/api/login`                               | 明示ログイン                                    |
+| POST   | `/api/logout`                              | ログアウト                                      |
+| GET    | `/api/dashboard`                           | 概況 (回線 / CPU / メモリ / Deco 台数 / 接続数) |
+| GET    | `/api/devices`                             | Deco ユニット (メッシュノード) 一覧             |
+| GET    | `/api/clients`                             | 接続クライアント一覧 (`?online_only=true`)      |
+| GET    | `/api/clients/blocked`                     | ブロック中クライアント一覧                      |
+| GET    | `/api/network/wan`                         | WAN IPv4 ステータス                             |
+| GET    | `/api/network/internet`                    | インターネット接続情報 (IPv4 / IPv6)            |
+| GET    | `/api/network/lan`                         | LAN / DHCP DNS / WAN IP                         |
+| GET    | `/api/network/ipv6`                        | IPv6 有効状態                                   |
+| GET    | `/api/network/performance`                 | CPU / メモリ使用率                              |
+| GET    | `/api/network/mac-clone`                   | MAC クローン設定                                |
+| GET    | `/api/network/wan-mode`                    | WAN ポートの動作モード                          |
+| GET    | `/api/network/dhcp-dial`                   | WAN の DHCP 接続設定 (unicast)                  |
+| GET    | `/api/network/igmp`                        | IGMP (マルチキャスト) 設定                      |
+| GET    | `/api/network/fast-xmit`                   | fast xmit の有効状態                            |
+| GET    | `/api/network/vlan`                        | VLAN (IPTV) 設定                                |
+| GET    | `/api/network/ddns`                        | DDNS の有効状態とドメイン                       |
+| GET    | `/api/wireless`                            | Wi-Fi 設定の取得                                |
+| POST   | `/api/wireless`                            | バンド別 Wi-Fi の ON/OFF                        |
+| POST   | `/api/wireless/config`                     | Wi-Fi 設定変更 (SSID / パスワード / enable 等)  |
+| GET    | `/api/wireless/power`                      | 電波 (DFS サポート等)                           |
+| GET    | `/api/wireless/beamforming`                | beamforming の有効状態                          |
+| GET    | `/api/wireless/operation-mode`             | 無線の動作モード (AP / router)                  |
+| GET    | `/api/wireless/bridge`                     | ブリッジ / PLC 状態                             |
+| GET    | `/api/wireless/roaming`                    | 802.11r 高速ローミングの有効状態                |
+| GET    | `/api/wireless/bandwidth`                  | 160MHz 幅 (HT160) の有効状態                    |
+| GET    | `/api/device/mode`                         | 動作モード (region / workmode / sysmode)        |
+| GET    | `/api/device/time`                         | 時刻・タイムゾーン設定                          |
+| GET    | `/api/device/speedtest`                    | 直近のスピードテスト結果                        |
+| GET    | `/api/cloud/device-info`                   | クラウド連携情報 (model / role 等)              |
+| GET    | `/api/cloud/login-status`                  | TP-Link ID のログイン状態                       |
+| GET    | `/api/system/component-info`               | ERP / 省電力等のコンポーネント情報              |
+| GET    | `/api/system/switch-list`                  | UI 機能スイッチ                                 |
+| GET    | `/api/system/log-types`                    | ログ種別 (`/api/system/log` の `level`)         |
+| GET    | `/api/system/log`                          | システムログ (`?level=&index=&limit=`)          |
+| GET    | `/api/system/firmware`                     | ファームウェア更新の有無 (cloud に問い合わせ)   |
+| POST   | `/api/reboot`                              | Deco の再起動 (`confirm=true` 必須)             |
+| POST   | `/api/raw`                                 | 任意エンドポイントへの汎用パススルー            |
+| POST   | `/api/luci/<module>/<form>/<operation>`    | luci の Web API の 1 操作 (後述)                |
+| POST   | `/api/app/<controller>/<form>/<operation>` | Deco アプリの経路 (TMP) の 1 操作 (後述)        |
 
 モデル (`DecoNode` 等) を定義している endpoint 以外は、ルーターの応答をそのまま返します
 (フィールドはファームウェアで異なりうる)。モデル化した endpoint も主要フィールドだけを定義し、
@@ -146,12 +155,13 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
 
 ### エラー
 
-| Status    | 意味                                                                  |
-| --------- | --------------------------------------------------------------------- |
-| 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等) |
-| 401       | ルーターへのログイン失敗 (`DecoAuthError`)                            |
-| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)       |
-| 504       | ルーターに到達できない (`DecoConnectionError`)                        |
+| Status    | 意味                                                                          |
+| --------- | ----------------------------------------------------------------------------- |
+| 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等)         |
+| 401       | ルーターへのログイン失敗 (`DecoAuthError`。TMP は email かパスワードの不一致) |
+| 413       | `/api/app/...` の `params` が TMP の 1 packet に収まらない                    |
+| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)               |
+| 504       | ルーターに到達できない (`DecoConnectionError`)                                |
 
 422 の `detail` はどの項目がなぜ不正かを返し、送った値 (パスワード等) は含めません。
 
@@ -221,6 +231,49 @@ curl -X POST http://127.0.0.1:8000/api/raw \
 - `params`: 任意の追加パラメータ (省略可)
 
 > `operation: write` と適切な `params` を渡すと設定を変更できる強力な口です。
+
+### luci・Deco アプリの操作 `/api/luci/...`・`/api/app/...`
+
+ルーターが受け付ける操作を、1 操作 1 endpoint で呼べます。一覧は FW 1.3.0 のイメージから復元したもので
+(後述)、`/docs` に module・controller ごとの tag で並びます。
+
+- `POST /api/luci/<module>/<form>/<operation>`: luci の Web API (`admin/<module>?form=<form>`。`locale` だけは
+  `admin/` が付かない) を、その operation で呼びます。
+- `POST /api/app/<controller>/<form>/<operation>`: Deco アプリと同じ経路 (TMP) で、その操作の opcode を呼びます。
+  luci には無い機能 (ポートフォワード・DHCP の lease・HomeShield・QoS・Wi-Fi のスケジュール・VPN・LED 等) はこちらにあります。
+
+本文の `params` はルーターへそのまま渡し (省略可)、成功応答の本体 (`result` / `data`) を返します。ルーターがエラーを
+返したら 502 です。各 endpoint の OpenAPI には、呼ぶ form (`x-deco-luci-path`) か opcode (`x-deco-tmp-opcode`)、
+operation (`x-deco-operation`)、破壊的操作か (`x-deco-destructive`) を載せています。
+
+```bash
+# DHCP の予約の一覧 (luci)
+curl -X POST http://127.0.0.1:8000/api/luci/client/addr_reservation/getlist -H 'Content-Type: application/json' -d '{}'
+# ポートフォワードの一覧 (Deco アプリの経路)
+curl -X POST http://127.0.0.1:8000/api/app/nat/vs/getlist -H 'Content-Type: application/json' -d '{}'
+```
+
+Deco 自体やネットワーク全体に届かなくなる操作 (再起動・初期化・ファームウェアの更新・WAN の切断・LAN・WAN・mesh・
+IPTV の接続設定やポートの媒体・動作モード・メインノード・mesh グループの変更) と、元に戻せない操作 (ノードや cloud の紐付けの変更・
+管理アカウントや TP-Link ID の変更・ログ・履歴・レポート・メッセージの消去) は、`/api/reboot` と同じく `confirm: true` が必須です
+(`false` は 400、欠落や型違いは 422)。Wi-Fi や VPN など、この API から設定し直せる個別の設定の変更は、
+`/api/wireless` と同じく確認なしで実行します。
+
+- この API は `params` を検証せずにそのまま送ります。必要な項目と制約は操作とファームウェアごとに異なり、
+  ルーターが受け付けない値はルーターのエラー (502) になります。設定の write は、同じ form の read の応答が
+  形の手がかりになります。
+- OpenVPN のプロファイルの追加・更新 (`/api/app/vpn_client/server/insert`・`update`) は、設定ファイルが
+  ルーターにアップロード済みであることを前提にします。この API はファイルを送れないので、OpenVPN は
+  Deco アプリで設定してください。
+- TMP の write の後、ルーターは設定を反映する間 TMP の port を閉じることがあります。
+  その間の `/api/app/...` は 504 になります。ルーターがセッションを切った直後の要求も、送った後に切断を
+  知るので 504 になることがあり、その要求は再送しません (次の要求で接続し直します)。
+- TMP の要求は 1 つの packet (本文は約 64 KiB まで) で送るので、それを超える `params` は 413 です。
+- 応答はルーターが保存している値をそのまま返します。Wi-Fi・PPPoE・VPN (WireGuard の鍵を含む)・ゲストの
+  ポータルなどのパスワードや鍵も含みうるので、API を公開する範囲に注意してください。
+- 一覧に含めないもの: ログイン前の手順、mesh のノード間の処理、debug 用の opcode、multipart やファイルの
+  送受信を前提とする form (設定のバックアップ・復元、ファームウェアの upload)、管理パスワードや cloud の
+  token を返す read。
 
 ### 再起動例 (破壊的操作)
 
@@ -462,7 +515,7 @@ Deco の管理画面と同じログインフローを再現しています。
 5. `form=login` で `stok` と `sysauth` Cookie を取得し、以降のリクエストで利用
 
 > 実機 (BE85 / FW 1.2.2) の Web UI を解析して確認した挙動です。署名 hash には
-> ローカル管理アカウント名 `admin` を使い、TP-Link ID (メール) はローカル API では使いません。
+> ローカル管理アカウント名 `admin` を使い、TP-Link ID (メール) は luci の Web API では使いません (TMP では使います)。
 
 ```mermaid
 sequenceDiagram
@@ -482,47 +535,63 @@ sequenceDiagram
 暗号化は `src/deco/crypto.py` (`SessionCipher`)、ログイン / 通信は
 `src/deco/client.py` (`DecoClient`) にあります。
 
-### 実機で確認した luci form (BE85 / FW 1.2.4 を静的解析)
+### Deco アプリの経路 (TMP)
 
-TP-Link 配布の FW 1.2.4 イメージ (実機と同一ビルド) を展開し、luci controller
-(`/usr/lib/lua/luci/controller/*.lua`、Lua 5.1 bytecode) の定数から form 名を抽出したうえで、
-実機に read / list / get を投げて到達性を確認した (write 系 op は投げていない)。
+Deco アプリは luci の Web API ではなく、TMP (Tether Management Protocol) でルーターを操作します。
 
-**HTTP で到達できる module**: `admin/` 配下は `administration` / `client` / `cloud` /
-`cloud_account` / `component_control` / `device` / `log_export` / `network` / `system` /
-`web` / `wireless` の 11 個。トップレベルは `login` / `locale` / `domain_login` (read では触れない
-`blocking` / `mcu_upgrade` も存在)。`firmware` / `qos` / `parental_control` / `dhcp` / `nat` /
-`iptv` / `vpn_server` などの module は HTTP 404 で、この機種の luci には登録されていない。存在しない
-form は HTTP 200 + `{"error_code": 1, "msg": "no such callback"}` または
-`{"success": false, "errorcode": "..."}` を返すので、form の有無はこれで判別できる。
+1. Deco の dropbear (SSH、port 20001) に password 認証で接続する。username は TP-Link ID の email の
+   SHA-1 (hex)、password は TP-Link ID のパスワードで、ルーターに保存されたオーナーのアカウントと照合される。
+2. `direct-tcpip` のチャネルで、ルーター内の TMP のデーモン (`127.0.0.1:20002`) につなぐ。
+3. チャネルの上で、TMP の packet (16 byte の header、CRC32) に business の header (20 byte、opcode・txid・
+   本文の CRC32・全体長・offset) と JSON の本文 (`{"config_version": <ミリ秒>, "params": {...}}`) を載せて送る。
+   最初に opcode `0x0001` でセッションを割り当てる。
+4. 応答は要求と同じ opcode・txid の business packet で返る。長い応答は分割され、offset を付けた PULL で
+   続きを取る。途中に届く keep-alive には応答し、opcode か txid が違う packet (クライアントの接続イベントの
+   通知等。通知の txid はルーター側の番号で、要求と重なりうる) は読み捨てる。
+5. ルーター側では `tmpsvr` が opcode を `luci.controller.admin.mobile_app.<controller>` の form・operation に
+   変換して呼ぶ。応答は luci と同じ `{"error_code": 0, "result": ...}`。
 
-**mobile_app controller は HTTP 表面に無い**: `controller/admin/mobile_app/*.lua` (35 本。dhcp /
-nat / iptv / vpn / security / eco_mode / iot_device / speedtest など機能が揃う) は
-`admin/mobile_app/<name>?form=...` を含むどの URL でも 404。dispatcher の index は controller を
-深さ 2 まで (`*.lua` と `*/*.lua`) しか登録せず、これらは深さ 3 のため露出しない。`discover.lua` が
-`require` して呼ぶ作りで、Deco アプリは luci HTTP ではなく TDP (LAN の UDP) や cloud 経由で到達する。
-この wrapper が使う luci HTTP API の対象外。
+```mermaid
+sequenceDiagram
+    participant C as TmpClient
+    participant D as Deco (dropbear :20001)
+    participant T as tmpsvr (127.0.0.1:20002)
+    C->>D: SSH password 認証 (user = SHA-1(email))
+    C->>D: direct-tcpip を開く
+    D->>T: チャネルを中継
+    C->>T: opcode 0x0001 (セッションの割り当て)
+    T-->>C: token
+    C->>T: opcode + JSON (txid n)
+    T-->>C: keep-alive・通知 (opcode か txid が違う)
+    T-->>C: 応答の先頭 (txid n, total, offset 0)
+    C->>T: PULL (txid n, offset)
+    T-->>C: 応答の続き
+```
 
-**read で取得できるが公開していない form** (機微・重複・空応答):
+TMP の通信は `src/deco/tmp.py` (`TmpClient`) にあります。ルーターの host key は検証しません
+(luci の HTTPS の証明書を既定で検証しないのと同じ扱い)。
 
-| form                                             | op   | 理由                                                                     |
-| ------------------------------------------------ | ---- | ------------------------------------------------------------------------ |
-| `cloud_account?form=get_token`                   | read | cloud トークンを返す                                                     |
-| `cloud_account?form=user_login`                  | read | TP-Link ID の資格情報フィールド                                          |
-| `administration?form=account` / `recovery`       | read | 管理パスワード (RSA 暗号) を含む                                         |
-| `cloud?form=manager`                             | get  | 管理権限プロファイル                                                     |
-| `cloud?form=message`                             | read | cloud レポート通知の履歴                                                 |
-| `cloud_account?form=check_*` / `cloud_upgrade`   | read | cloud 状態。`/api/cloud/login-status` と `/api/system/firmware` で足りる |
-| `client?form=client_access`                      | read | `/api/clients` と重複                                                    |
-| `network?form=lan_ipv4`                          | read | `/api/network/lan` と重複                                                |
-| `network?form=erp_setting` / `wifi_network`      | read | この機種では `{}`                                                        |
-| `log_export?form=save_log` / `system?form=envar` | -    | multipart 前提で JSON envelope では HTTP 500                             |
+### ファームウェアから復元した操作の一覧 (BE85 V2 / FW 1.3.0)
 
-**write / operate を使う form** (read だけでは `no such callback` になる operation を持つ)。
-実装済み: `system?form=logout` (`/api/logout`)、`device?form=system` の `operation:reboot`
-(`/api/reboot`)、`wireless?form=wlan` の write (`/api/wireless`・`/api/wireless/config`。read は
-`/api/wireless`)。未実装: `client?form=black_list` の add / remove、`cloud?form=firmware` /
-`firmware_status` の download / upgrade、各 setting form の write など。
+`src/deco/catalog.py` の一覧は、TP-Link 配布の FW 1.3.0 のイメージ (UBI の中の squashfs) を展開して
+作りました。
+
+- **luci**: `/usr/lib/lua/luci/controller/` の controller (Lua 5.1 bytecode。整数定数に型 9 を使う LNUM の
+  拡張つき) から、`form → operation → cb` の dispatch table を復元した。HTTP の dispatcher は controller を
+  深さ 2 (`*.lua` と `admin/*.lua`) までしか登録しないので、`admin/mobile_app/*.lua` は HTTP からは 404 になる。
+  存在しない form・operation は HTTP 200 の `{"error_code": 1, "msg": "no such callback"}` を返す。
+- **TMP**: `/usr/bin/tmpsvr` の opcode の表 (opcode と URI・form・operation の構造体の配列。文字列は
+  `R_AARCH64_RELATIVE` の relocation から解決する) を復元した。`0x4000-` がアプリ向け、`0x8000-` が
+  初期設定と工場試験、`0xC000-` が mesh のノード間の同期で、一覧には `0x4000-0x7FFF` のうち controller の
+  dispatch table に実在する操作だけを入れた。同じ組に複数の opcode があるときは最小の番号を使う。
+- FW 1.2.4 との差: luci には `admin/firmware` (設定のバックアップ・復元)・`admin/wifidog` (ゲストの
+  キャプティブポータル)・`network?form=flow_control` などが増え、`cloud_account?form=tmp_cmd` などが消えた。
+  TMP には Wi-Fi のスケジュール・OFDMA・DoH / DoT・internet backup・アクセス制御などの opcode が増えた。
+  1.2.4 の実機では、1.3.0 で増えた操作は 404 か `no such callback` になる。
+
+実機の read で、`client?form=traffic_stat` (クライアントごとの通信速度)・`administration?form=mode` / `view` /
+`local` (管理画面へのアクセス制御)・`cloud?form=nickname` / `firmware_status`・`locale?form=lang` / `country` が
+値を返すことを、FW 1.2.4 で確かめています。write は実機で確かめていません。
 
 ## 構成
 
@@ -534,19 +603,21 @@ src/
   deco/            Deco ローカル API クライアント (FastAPI 非依存・単体利用可)
     crypto.py        AES / RSA 暗号化と署名 (SessionCipher)
     client.py        ログイン・再ログイン・エンドポイント呼び出し (DecoClient)
+    tmp.py           Deco アプリの経路 (SSH + TMP) の接続と opcode の呼び出し (TmpClient)
+    catalog.py       ファームウェアから復元した luci form と TMP opcode の一覧
     exceptions.py    DecoError / DecoAuthError / DecoConnectionError
   api/             FastAPI 層
-    routes.py        エンドポイント定義
+    routes.py        エンドポイント定義 (一覧の操作ごとの endpoint を含む)
     models.py        request / response モデル
-    service.py       DecoClient を lock + worker thread で直列実行する DecoService
+    service.py       クライアントを lock + worker thread で直列実行する DecoService
   settings.py      環境変数 (pydantic-settings)
   main.py          FastAPI アプリと、例外 → HTTP status の対応
-tests/             e2e テスト (起動した API に、luci を模した fake の Deco をつないで HTTP で叩く)
+tests/             e2e テスト (起動した API に、luci と TMP を模した fake の Deco をつないで HTTP で叩く)
 ```
 
 `deco/` はプロトコル層 (暗号化・ログイン・通信・base64 名の復号)、`api/` は Web 層という
 責務分離です。このうち、`deco/` から `api/`・`main.py`・`settings.py` への依存の禁止、`api/`・`deco/` の中の層の向き、
-外部ライブラリ (fastapi・Crypto・requests) を直接 import できるモジュールは、import-linter が `mise run lint` で検査します。
+外部ライブラリ (fastapi・Crypto・requests・paramiko) を直接 import できるモジュールは、import-linter が `mise run lint` で検査します。
 
 ```mermaid
 flowchart LR
@@ -555,8 +626,11 @@ flowchart LR
     routes --> models[api/models.py]
     routes --> service[api/service.py]
     service --> client[deco/client.py]
+    service --> tmp[deco/tmp.py]
+    routes --> catalog[deco/catalog.py]
     client --> crypto[deco/crypto.py]
     client --> exceptions[deco/exceptions.py]
+    tmp --> exceptions
     main --> exceptions
 ```
 
@@ -585,6 +659,8 @@ Deco の公開されていないローカル API をリバースエンジニア�
   (GPL-3.0) — TP-Link / Deco の暗号化ログイン手順
 - BE85 本体の Web UI (`tpEncrypt.js` 等) を解析し、`md5("admin"+password)` 署名や
   `device_mac` パラメータ等の機種固有の挙動を確認
+- [mthsg/pydeco-tmp](https://github.com/mthsg/pydeco-tmp) (MIT) — TMP の SSH 認証と framing の公開解析。
+  opcode の一覧は BE85 のファームウェアから復元した
 
 ## ライセンス / License
 
@@ -651,7 +727,7 @@ Run the pre-commit stage hooks on all tracked files with prek (same as the CI pr
 
 - **Usage:** `run-image`
 
-Run the Docker image on port 8000 with PASSWORD from fnox and the other settings from the environment
+Run the Docker image on port 8000 with PASSWORD and TPLINK_EMAIL from fnox and the other settings from the environment
 
 ## `template-diff`
 

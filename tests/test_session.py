@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 from hypothesis import given, strategies as st
 
+from tests.fake_tmp import FakeTmp
 from tests.harness import (
     FORBIDDEN,
     LOGIN_PAGE,
+    ROUTER_PASSWORD,
     UNAUTHORIZED,
     FakeDeco,
     HttpReply,
@@ -22,17 +24,24 @@ _WAN = "admin/network?form=wan_ipv4"
 
 
 def test_started_server_contacts_router_only_when_needed(tmp_path: Path) -> None:
-    """起動しただけではルーターにログインせず、最初の要求で 1 回だけログインする。"""
+    """起動しただけではルーターにログインせず (luci・TMP とも)、最初の要求で 1 回だけログインする。"""
     with (
         FakeDeco.serve() as router,
-        run_api(deco_host=router.url, log_path=tmp_path / "uvicorn.log") as api,
+        FakeTmp.serve(password=ROUTER_PASSWORD) as app,
+        run_api(
+            deco_host=router.url, tmp_port=app.port, log_path=tmp_path / "uvicorn.log"
+        ) as api,
     ):
-        assert api.get("/api/health").json()["logged_in"] is False
+        health = api.get("/api/health").json()
+        assert health["logged_in"] is False
+        assert health["tmp_connected"] is False
         assert router.arrivals == []
+        assert app.logins == 0
         router.respond_result(_WAN, result={"wan": {}})
 
         assert api.get("/api/network/wan").status_code == 200
         assert router.logins == 1
+        assert app.logins == 0
 
 
 def test_health_reports_logged_out_without_contacting_router(stack: Stack) -> None:
@@ -45,6 +54,7 @@ def test_health_reports_logged_out_without_contacting_router(stack: Stack) -> No
         "status": "ok",
         "host": stack.router.url,
         "logged_in": False,
+        "tmp_connected": False,
     }
     assert stack.router.arrivals == []
 
@@ -273,7 +283,10 @@ def test_connection_refused_is_504_without_the_session_token(tmp_path: Path) -> 
     """接続を拒否されたときの例外には stok を含む URL が入るが、エラー応答には載せない。"""
     with (
         FakeDeco.serve() as router,
-        run_api(deco_host=router.url, log_path=tmp_path / "uvicorn.log") as api,
+        FakeTmp.serve(password=ROUTER_PASSWORD) as app,
+        run_api(
+            deco_host=router.url, tmp_port=app.port, log_path=tmp_path / "uvicorn.log"
+        ) as api,
     ):
         assert api.post("/api/login").status_code == 200
         router.stop()

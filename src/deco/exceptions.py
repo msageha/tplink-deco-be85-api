@@ -12,3 +12,7 @@ class DecoAuthError(DecoError):
 
 class DecoConnectionError(DecoError):
     """ルーターへ到達できない (タイムアウト・接続拒否など)。"""
+
+
+class DecoRequestTooLargeError(DecoError):
+    """要求がルーターのプロトコルで送れる大きさを超える。"""

@@ -8,7 +8,14 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from api import DecoService, router
-from deco import DecoAuthError, DecoClient, DecoConnectionError, DecoError
+from deco import (
+    DecoAuthError,
+    DecoClient,
+    DecoConnectionError,
+    DecoError,
+    DecoRequestTooLargeError,
+    TmpClient,
+)
 from settings import settings
 
 
@@ -23,11 +30,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             timeout=settings.timeout,
         )
     )
+    tmp = DecoService(
+        TmpClient(
+            settings.deco_host,
+            email=settings.tplink_email,
+            password=settings.password,
+            port=settings.tmp_port,
+            timeout=settings.timeout,
+        )
+    )
     app.state.deco = service
+    app.state.tmp = tmp
     try:
         yield
     finally:
         await service.run(service.client.logout)
+        await tmp.run(tmp.client.close)
 
 
 app = FastAPI(
@@ -67,6 +85,8 @@ async def deco_error_handler(_: Request, exc: DecoError) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
     if isinstance(exc, DecoConnectionError):
         return JSONResponse(status_code=504, content={"detail": str(exc)})
+    if isinstance(exc, DecoRequestTooLargeError):
+        return JSONResponse(status_code=413, content={"detail": str(exc)})
     return JSONResponse(
         status_code=502, content={"detail": str(exc), "error_code": exc.error_code}
     )
