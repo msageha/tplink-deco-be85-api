@@ -266,7 +266,12 @@ class FakeTmp:
 
     def __init__(self, *, password: str) -> None:
         self._lock = threading.Lock()
-        self._host_key = paramiko.ECDSAKey.generate()
+        # 実機と同じく、種類の違う host key を 2 つ持つ。API サーバーには RSA 側を信頼させるので、
+        # クライアントが信頼した種類の鍵を提示させないと、照合に失敗する。
+        self._ecdsa_key = paramiko.ECDSAKey.generate()
+        self._trusted_rsa_key = paramiko.RSAKey.generate(2048)
+        # None なら RSA の鍵を提示しない。
+        self.rsa_key: paramiko.PKey | None = self._trusted_rsa_key
         self._initial_password = password
         self.email = ROUTER_EMAIL
         self.password = password
@@ -312,7 +317,9 @@ class FakeTmp:
             conn.close()
             return
         transport = paramiko.Transport(conn)
-        transport.add_server_key(self._host_key)
+        transport.add_server_key(self._ecdsa_key)
+        if self.rsa_key is not None:
+            transport.add_server_key(self.rsa_key)
         with self._lock:
             self._transports.append(transport)
         try:
@@ -337,10 +344,18 @@ class FakeTmp:
             self.drops_during_auth = False
             self.fragment_skew = 0
             self.corrupt = ""
+            self.rsa_key = self._trusted_rsa_key
             self._responses = {}
             self._calls = []
             self._logins = 0
             self._auth_attempts = 0
+
+    @property
+    def trusted_host_key(self) -> str:
+        """API サーバーに信頼させる host key (`<鍵の種類> <base64>`)。"""
+        return (
+            f"{self._trusted_rsa_key.get_name()} {self._trusted_rsa_key.get_base64()}"
+        )
 
     def drop_sessions(self) -> None:
         """張られている SSH セッションをルーター側から切る (再起動や idle timeout と同じ状態)。"""

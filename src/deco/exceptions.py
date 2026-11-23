@@ -16,3 +16,7 @@ class DecoConnectionError(DecoError):
 
 class DecoRequestTooLargeError(DecoError):
     """要求がルーターのプロトコルで送れる大きさを超える。"""
+
+
+class DecoHostKeyError(DecoError):
+    """接続先の SSH の host key が、設定で信頼した鍵と一致しない。"""

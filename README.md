@@ -27,19 +27,20 @@ Deco の管理パスワード (TP-Link ID のパスワード) と、Deco のオ�
 [fnox](https://fnox.jdx.dev/) で age 暗号化し、`fnox.toml` の `PASSWORD` と `TPLINK_EMAIL` に保存しています。
 `mise run dev` / `mise run run-image` は `fnox exec` で復号した値を同名の環境変数としてアプリに渡し、
 復号できなければ起動しません。email は Deco アプリと同じ経路 (TMP、後述) の SSH の認証に使います。
-`TPLINK_EMAIL` を登録する前の checkout (`fnox.toml` に `PASSWORD` だけがある状態) では、次の手順で
-`TPLINK_EMAIL` を登録するまで `mise run dev` / `mise run run-image` は起動しません。
+`fnox.toml` に `TPLINK_EMAIL` が無い checkout では、次の手順で登録するまで `mise run dev` / `mise run run-image` は
+起動しません。
 
 復号に使う age の秘密鍵は、リポジトリ管理者の 1Password (`Private` vault の `age-identity`) から
 [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) で読みます。`op` をインストールしてサインインしておいてください。
 復号のたびに 1Password の承認 (Touch ID 等) を求められることがあります。
 
-値を変えたときは、リポジトリ管理者が次のコマンドで登録し直します (入力は表示されません)。`-c ./fnox.toml` は
-`fnox.local.toml` を読まずに `fnox.toml` の鍵で暗号化させるために付けます。
+値を登録・変更するときは、リポジトリ管理者が次のコマンドを実行します (入力は表示されません)。`-c ./fnox.toml` は
+`fnox.local.toml` を読まずに `fnox.toml` の鍵で暗号化させるために付けます。`fnox.toml` には既定の provider が無く、
+`--provider age` を付けずに新しいキーを登録すると、値が平文で保存されます。
 
 ```bash
-mise exec -- fnox -c ./fnox.toml set PASSWORD
-mise exec -- fnox -c ./fnox.toml set TPLINK_EMAIL
+mise exec -- fnox -c ./fnox.toml set PASSWORD --provider age
+mise exec -- fnox -c ./fnox.toml set TPLINK_EMAIL --provider age
 ```
 
 `fnox.toml` の暗号文はリポジトリ管理者の鍵でしか復号できません。ほかの環境では、git 管理外の `fnox.local.toml` に
@@ -58,8 +59,12 @@ mise exec -- fnox -c ./fnox.local.toml set PASSWORD --provider age
 mise exec -- fnox -c ./fnox.local.toml set TPLINK_EMAIL --provider age
 ```
 
-接続先の Deco の URL (`DECO_HOST`) は `mise.toml` の `[env]` で設定します。ほかの設定値にはアプリ側に既定値があり、
-変えるときだけ環境変数で渡します。
+接続先の Deco の URL (`DECO_HOST`) と、Deco の TMP (SSH) の host key (`TMP_HOST_KEY`) は `mise.toml` の `[env]` で
+設定します。`TMP_HOST_KEY` は `known_hosts` と同じ `<鍵の種類> <base64>` の形で、Deco と同じ LAN から
+`ssh-keyscan -p 20001 -t ecdsa <Deco のアドレス>` を実行し、出力の 2 列目と 3 列目を使います。Deco は RSA の鍵も
+持ちますが、SHA-1 の署名 (`ssh-rsa`) でしか提示しないので使えません。API はこの鍵と一致しない接続先には TP-Link ID のパスワードを送りません。
+Deco の鍵が変わったときは、`/api/app/...` は 502 を返し、`detail` に提示された鍵の種類と fingerprint が出ます。
+その場合は鍵を取り直して登録し直してください。ほかの設定値にはアプリ側に既定値があり、変えるときだけ環境変数で渡します。
 
 | 変数         | 既定値  | 説明                                       |
 | ------------ | ------- | ------------------------------------------ |
@@ -99,8 +104,8 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
   `CMD-SHELL`、`command` の中のパイプや変数展開等) も動きません。compose の `healthcheck.test` は exec 形式で Python を呼びます
   (例: `["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]`)。
   中を調べるときは `docker run --rm --entrypoint python deco-be85-api:latest -c '<code>'` で起動します。
-- `PASSWORD`・`TPLINK_EMAIL`・`DECO_HOST` はイメージに含めず、実行時に環境変数で渡します。mise を使わずに起動する場合
-  (docker compose 等) は、この 3 つを直接渡せば fnox は要りません。
+- `PASSWORD`・`TPLINK_EMAIL`・`DECO_HOST`・`TMP_HOST_KEY` はイメージに含めず、実行時に環境変数で渡します。mise を
+  使わずに起動する場合 (docker compose 等) は、この 4 つを直接渡せば fnox は要りません。
 
 ## エンドポイント
 
@@ -155,13 +160,13 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
 
 ### エラー
 
-| Status    | 意味                                                                          |
-| --------- | ----------------------------------------------------------------------------- |
-| 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等)         |
-| 401       | ルーターへのログイン失敗 (`DecoAuthError`。TMP は email かパスワードの不一致) |
-| 413       | `/api/app/...` の `params` が TMP の 1 packet に収まらない                    |
-| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)               |
-| 504       | ルーターに到達できない (`DecoConnectionError`)                                |
+| Status    | 意味                                                                                                                      |
+| --------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等)                                                     |
+| 401       | ルーターへのログイン失敗 (`DecoAuthError`。TMP は email かパスワードの不一致)                                             |
+| 413       | `/api/app/...` の `params` が TMP の 1 packet に収まらない                                                                |
+| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)。TMP の host key が `TMP_HOST_KEY` と一致しないときも 502 |
+| 504       | ルーターに到達できない (`DecoConnectionError`)                                                                            |
 
 422 の `detail` はどの項目がなぜ不正かを返し、送った値 (パスワード等) は含めません。
 
@@ -568,8 +573,8 @@ sequenceDiagram
     T-->>C: 応答の続き
 ```
 
-TMP の通信は `src/deco/tmp.py` (`TmpClient`) にあります。ルーターの host key は検証しません
-(luci の HTTPS の証明書を既定で検証しないのと同じ扱い)。
+TMP の通信は `src/deco/tmp.py` (`TmpClient`) にあります。鍵交換では `TMP_HOST_KEY` と同じ種類の host key だけを
+提示させ、一致を確かめてから password 認証に進みます。
 
 ### ファームウェアから復元した操作の一覧 (BE85 V2 / FW 1.3.0)
 

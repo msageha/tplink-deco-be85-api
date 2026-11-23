@@ -29,7 +29,7 @@ def test_started_server_contacts_router_only_when_needed(tmp_path: Path) -> None
         FakeDeco.serve() as router,
         FakeTmp.serve(password=ROUTER_PASSWORD) as app,
         run_api(
-            deco_host=router.url, tmp_port=app.port, log_path=tmp_path / "uvicorn.log"
+            deco_host=router.url, tmp=app, log_path=tmp_path / "uvicorn.log"
         ) as api,
     ):
         health = api.get("/api/health").json()
@@ -285,7 +285,7 @@ def test_connection_refused_is_504_without_the_session_token(tmp_path: Path) -> 
         FakeDeco.serve() as router,
         FakeTmp.serve(password=ROUTER_PASSWORD) as app,
         run_api(
-            deco_host=router.url, tmp_port=app.port, log_path=tmp_path / "uvicorn.log"
+            deco_host=router.url, tmp=app, log_path=tmp_path / "uvicorn.log"
         ) as api,
     ):
         assert api.post("/api/login").status_code == 200

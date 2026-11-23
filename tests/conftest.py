@@ -22,6 +22,6 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
     with (
         FakeDeco.serve() as router,
         FakeTmp.serve(password=ROUTER_PASSWORD) as app,
-        run_api(deco_host=router.url, tmp_port=app.port, log_path=log_path) as api,
+        run_api(deco_host=router.url, tmp=app, log_path=log_path) as api,
     ):
         yield Stack(router, app, api)

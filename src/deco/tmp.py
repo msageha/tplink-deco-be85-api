@@ -13,16 +13,20 @@ import struct
 import threading
 import time
 import zlib
+from base64 import b64decode
+from binascii import Error as Base64Error
 from hashlib import sha1
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 from urllib.parse import urlsplit
 
 import paramiko
+from paramiko.ssh_exception import IncompatiblePeer
 
 from deco.exceptions import (
     DecoAuthError,
     DecoConnectionError,
     DecoError,
+    DecoHostKeyError,
     DecoRequestTooLargeError,
 )
 
@@ -66,6 +70,31 @@ def _business_packet(
     return header + body
 
 
+class TmpCredentials(NamedTuple):
+    """TMP の SSH 認証に使う、Deco のオーナーの TP-Link ID。"""
+
+    email: str
+    password: str
+
+
+def _parse_host_key(host_key: str) -> paramiko.PKey:
+    """
+    `<鍵の種類> <base64>` の形の公開鍵を読む。
+
+    Raises:
+        ValueError: 公開鍵として読めない。
+    """
+    key_type, _, encoded = host_key.strip().partition(" ")
+    try:
+        return paramiko.PKey.from_type_string(
+            key_type, b64decode(encoded, validate=True)
+        )
+    except (Base64Error, paramiko.SSHException, ValueError) as err:
+        raise ValueError(
+            f"TMP host key is not '<key type> <base64>' of a supported key: {err}"
+        ) from err
+
+
 class TmpClient:
     """1 台の Deco に対する TMP のセッションを保持する同期クライアント。並行利用はできない。"""
 
@@ -73,8 +102,8 @@ class TmpClient:
         self,
         url: str,
         *,
-        email: str,
-        password: str,
+        credentials: TmpCredentials,
+        host_key: str,
         port: int = 20001,
         timeout: int = 30,
     ) -> None:
@@ -82,15 +111,22 @@ class TmpClient:
         url は luci の Web API と同じ Deco の URL で、そのホストの port に SSH で接続する。
 
         SSH の username は TP-Link ID の email の SHA-1 (hex) で、dropbear がルーターに保存された
-        オーナーのアカウントと照合する。
+        オーナーのアカウントと照合する。host_key は信頼する Deco の SSH の host key で、
+        `known_hosts` と同じ `<鍵の種類> <base64>` の形。
+
+        Raises:
+            ValueError: url にホストが無い、または host_key を公開鍵として読めない。
         """
         hostname = urlsplit(url).hostname
         if not hostname:
             raise ValueError(f"Deco URL has no host: {url!r}")
         self.host = hostname
+        self._host_key = _parse_host_key(host_key)
         self._port = port
-        self._username = sha1(email.encode(), usedforsecurity=False).hexdigest()
-        self._password = password
+        self._username = sha1(
+            credentials.email.encode(), usedforsecurity=False
+        ).hexdigest()
+        self._password = credentials.password
         self._timeout = timeout
         self._transport: paramiko.Transport | None = None
         self._channel: paramiko.Channel | None = None
@@ -129,14 +165,17 @@ class TmpClient:
             transport.banner_timeout = remaining
             transport.handshake_timeout = remaining
             transport.auth_timeout = remaining
-            # ルーターの host key は検証しない (luci の HTTPS の証明書を既定で検証しないのと同じ扱い)。
-            transport.connect(username=self._username, password=self._password)
+            self._verify_host_key(transport)
+            transport.auth_password(self._username, self._password)
             channel = transport.open_channel(
                 "direct-tcpip",
                 dest_addr=_DAEMON_ADDRESS,
                 src_addr=sock.getsockname()[:2],
                 timeout=self._remaining(),
             )
+        except DecoHostKeyError:
+            self.close()
+            raise
         except paramiko.AuthenticationException as err:
             # paramiko は認証中のタイムアウトや切断も AuthenticationException で投げるので、
             # 接続が続いたままルーターが認証の結果を返したときだけ資格情報の不一致として扱う
@@ -167,6 +206,41 @@ class TmpClient:
         self._seq = 0
         self._txid = 0
         self._exchange(_OPCODE_ALLOC, body=b"")
+
+    def _verify_host_key(self, transport: paramiko.Transport) -> None:
+        """
+        鍵交換を済ませ、ルーターの host key が信頼した鍵と一致することを確かめる。
+
+        パスワードを送る前に照合するので、一致しなければ資格情報は接続先に渡らない。Deco は種類の
+        違う host key を複数持つので、信頼した鍵の種類だけを鍵交換で提示させる。
+
+        Raises:
+            DecoHostKeyError: host key が一致しない。
+        """
+        name = self._host_key.get_name()
+        options = transport.get_security_options()
+        # RSA の鍵は、鍵の種類 (ssh-rsa) と鍵交換の署名の方式 (rsa-sha2-512 等) の名前が違う。
+        options.key_types = [
+            key_type
+            for key_type in options.key_types
+            if key_type == name
+            or (name == "ssh-rsa" and key_type.startswith("rsa-sha2-"))
+        ]
+        try:
+            transport.start_client(timeout=self._remaining())
+        except IncompatiblePeer as err:
+            # Deco の dropbear は RSA の鍵を SHA-1 の署名 (ssh-rsa) でしか提示せず、paramiko は
+            # それを受け付けないので、RSA の鍵を信頼しても鍵交換ができない。
+            raise DecoHostKeyError(
+                f"Deco at {self.host}:{self._port} offers no usable {name} host key; "
+                "set TMP_HOST_KEY to its ECDSA key (ssh-keyscan -p 20001 -t ecdsa <host>)"
+            ) from err
+        presented = transport.get_remote_server_key()
+        if presented != self._host_key:
+            raise DecoHostKeyError(
+                f"Deco at {self.host}:{self._port} presented host key "
+                f"{presented.get_name()} {presented.fingerprint}, which does not match TMP_HOST_KEY"
+            )
 
     def _open_socket(self) -> socket.socket:
         """

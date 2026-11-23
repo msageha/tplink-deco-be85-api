@@ -15,6 +15,7 @@ from deco import (
     DecoError,
     DecoRequestTooLargeError,
     TmpClient,
+    TmpCredentials,
 )
 from settings import settings
 
@@ -33,8 +34,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     tmp = DecoService(
         TmpClient(
             settings.deco_host,
-            email=settings.tplink_email,
-            password=settings.password,
+            credentials=TmpCredentials(
+                email=settings.tplink_email, password=settings.password
+            ),
+            host_key=settings.tmp_host_key,
             port=settings.tmp_port,
             timeout=settings.timeout,
         )

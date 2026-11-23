@@ -525,21 +525,23 @@ _STARTED_RE = re.compile(r"Uvicorn running on (http://\S+)")
 
 
 @contextmanager
-def run_api(*, deco_host: str, tmp_port: int, log_path: Path) -> Generator[Api]:
+def run_api(*, deco_host: str, tmp: FakeTmp, log_path: Path) -> Generator[Api]:
     """
     `uvicorn main:app` を本番と同じ環境変数の設定で subprocess として起動する。
 
     実行環境の変数は coverage の計測に使うものだけを渡す。settings は名前の大小文字を区別せずに
     読むので、手元の `deco_host` などが残ると実機に接続しうるため。proxy・uvicorn の設定も
     同じ理由で渡さず、ACCOUNT / VERIFY_SSL / TIMEOUT はアプリの既定値で動かす。TMP は
-    実機と同じ 20001 番では待ち受けられないので、fake の port を TMP_PORT で渡す。
+    実機と同じ 20001 番では待ち受けられないので、fake の port を TMP_PORT で、fake の host key を
+    TMP_HOST_KEY で渡す。
     """
     env = {k: v for k, v in os.environ.items() if k.startswith("COVERAGE_")}
     env |= {
         "PASSWORD": ROUTER_PASSWORD,
         "TPLINK_EMAIL": ROUTER_EMAIL,
         "DECO_HOST": deco_host,
-        "TMP_PORT": str(tmp_port),
+        "TMP_PORT": str(tmp.port),
+        "TMP_HOST_KEY": tmp.trusted_host_key,
     }
     command = [
         sys.executable,

@@ -45,5 +45,5 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 USER 65532
 EXPOSE 8000
 
-# PASSWORD・TPLINK_EMAIL・DECO_HOST (必須) はイメージに含めず、実行時に環境変数で渡す。
+# PASSWORD・TPLINK_EMAIL・DECO_HOST・TMP_HOST_KEY (必須) はイメージに含めず、実行時に環境変数で渡す。
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

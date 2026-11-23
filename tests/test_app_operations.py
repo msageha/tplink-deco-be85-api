@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import paramiko
 import pytest
 from hypothesis import example, given, strategies as st
 
@@ -262,7 +263,7 @@ def test_app_login_rejected_is_401_and_not_retried_until_restart(
         FakeDeco.serve() as router,
         FakeTmp.serve(password=ROUTER_PASSWORD) as app,
         run_api(
-            deco_host=router.url, tmp_port=app.port, log_path=tmp_path / "uvicorn.log"
+            deco_host=router.url, tmp=app, log_path=tmp_path / "uvicorn.log"
         ) as api,
     ):
         setattr(app, field, "other@example.com" if field == "email" else "other")
@@ -273,6 +274,35 @@ def test_app_login_rejected_is_401_and_not_retried_until_restart(
         assert (first.status_code, second.status_code) == (401, 401)
         assert app.auth_attempts == 1
         assert app.calls == []
+
+
+def test_app_router_with_untrusted_host_key_gets_no_password_and_is_502(
+    stack: Stack,
+) -> None:
+    """host key が信頼した鍵と違う接続先には、認証 (パスワードの送信) をせずに失敗する。"""
+    stack.reset_logged_out()
+    stack.app.rsa_key = paramiko.RSAKey.generate(2048)
+
+    response = stack.api.post("/api/app/device/led/read", json={})
+
+    assert response.status_code == 502
+    assert "TMP_HOST_KEY" in response.json()["detail"]
+    assert stack.app.auth_attempts == 0
+    assert stack.app.calls == []
+
+
+def test_app_router_not_offering_the_trusted_key_type_gets_no_password_and_is_502(
+    stack: Stack,
+) -> None:
+    """信頼した種類の host key をルーターが提示しなければ、ほかの鍵で妥協せず、認証もしない。"""
+    stack.reset_logged_out()
+    stack.app.rsa_key = None
+
+    response = stack.api.post("/api/app/device/led/read", json={})
+
+    assert response.status_code == 502
+    assert "TMP_HOST_KEY" in response.json()["detail"]
+    assert stack.app.auth_attempts == 0
 
 
 def test_app_unreachable_router_is_504(stack: Stack) -> None:
