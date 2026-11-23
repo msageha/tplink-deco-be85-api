@@ -543,10 +543,10 @@ Deco アプリは luci の Web API ではなく、TMP (Tether Management Protoco
    SHA-1 (hex)、password は TP-Link ID のパスワードで、ルーターに保存されたオーナーのアカウントと照合される。
 2. `direct-tcpip` のチャネルで、ルーター内の TMP のデーモン (`127.0.0.1:20002`) につなぐ。
 3. チャネルの上で、TMP の packet (16 byte の header、CRC32) に business の header (20 byte、opcode・txid・
-   本文の CRC32・全体長・offset) と JSON の本文 (`{"config_version": <ミリ秒>, "params": {...}}`) を載せて送る。
+   本文全体の CRC32・全体長・offset) と JSON の本文 (`{"config_version": <ミリ秒>, "params": {...}}`) を載せて送る。
    最初に opcode `0x0001` でセッションを割り当てる。
-4. 応答は要求と同じ opcode・txid の business packet で返る。長い応答は分割され、offset を付けた PULL で
-   続きを取る。途中に届く keep-alive には応答し、opcode か txid が違う packet (クライアントの接続イベントの
+4. 応答は要求と同じ opcode・txid の business packet で返る。長い応答は分割され (実機では 8 KiB 程度ずつ)、
+   offset を付けた PULL で続きを取る。分割された断片も、business の CRC32 には本文全体のものが入る。途中に届く keep-alive には応答し、opcode か txid が違う packet (クライアントの接続イベントの
    通知等。通知の txid はルーター側の番号で、要求と重なりうる) は読み捨てる。
 5. ルーター側では `tmpsvr` が opcode を `luci.controller.admin.mobile_app.<controller>` の form・operation に
    変換して呼ぶ。応答は luci と同じ `{"error_code": 0, "result": ...}`。
@@ -589,9 +589,10 @@ TMP の通信は `src/deco/tmp.py` (`TmpClient`) にあります。ルーター�
   TMP には Wi-Fi のスケジュール・OFDMA・DoH / DoT・internet backup・アクセス制御などの opcode が増えた。
   1.2.4 の実機では、1.3.0 で増えた操作は 404 か `no such callback` になる。
 
-実機の read で、`client?form=traffic_stat` (クライアントごとの通信速度)・`administration?form=mode` / `view` /
-`local` (管理画面へのアクセス制御)・`cloud?form=nickname` / `firmware_status`・`locale?form=lang` / `country` が
-値を返すことを、FW 1.2.4 で確かめています。write は実機で確かめていません。
+FW 1.2.4 の実機で、luci の read (`client?form=traffic_stat`・`addr_reservation` の `getlist`・
+`administration?form=mode` など) と、TMP の read (クライアントの一覧・ポートフォワード・DHCP の予約と lease・
+LED・`upnp`・QoS・HomeShield・Wi-Fi など。分割された応答を含む) が値を返すことを確かめています。
+write は実機で確かめていません。
 
 ## 構成
 

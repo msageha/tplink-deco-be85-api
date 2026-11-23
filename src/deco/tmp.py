@@ -39,7 +39,7 @@ _TMP_TYPE_ACK = 2
 _TMP_TYPE_DATA = 5
 # CRC32 は、この値を CRC の欄に入れた packet 全体から計算する。
 _CRC_PLACEHOLDER = 0x5A6B7C8D
-# business の header: version 1・2、opcode、ptype、err、txid、本文の CRC32、全体長、offset。
+# business の header: version 1・2、opcode、ptype、err、txid、本文全体の CRC32、全体長、offset。
 _BUSINESS_HEADER = struct.Struct(">BBHBBHIII")
 _PTYPE_REQUEST = 2
 _PTYPE_PULL = 4
@@ -48,11 +48,14 @@ _PTYPE_RESPONSE = 5
 _OPCODE_ALLOC = 0x0001
 
 
+def _tmp_crc(header: bytes, *, payload: bytes) -> int:
+    """TMP の packet の CRC32。header の CRC の欄を placeholder に置き換えて計算する。"""
+    return zlib.crc32(header[:-4] + struct.pack(">I", _CRC_PLACEHOLDER) + payload)
+
+
 def _tmp_packet(payload: bytes, *, seq: int) -> bytes:
     header = _TMP_HEADER.pack(1, 1, _TMP_TYPE_DATA, 0, len(payload), 0, 0, seq, 0)
-    placeholder = header[:-4] + struct.pack(">I", _CRC_PLACEHOLDER)
-    crc = zlib.crc32(placeholder + payload)
-    return header[:-4] + struct.pack(">I", crc) + payload
+    return header[:-4] + struct.pack(">I", _tmp_crc(header, payload=payload)) + payload
 
 
 def _business_packet(
@@ -253,43 +256,75 @@ class TmpClient:
                 continue
             if packet_type != _TMP_TYPE_DATA:
                 raise DecoError(f"Unexpected TMP packet type {packet_type}")
-            rest = self._receive_exact(_TMP_HEADER.size - 4)
-            (length,) = struct.unpack_from(">H", rest)
-            return self._receive_exact(length)
+            header = head + self._receive_exact(_TMP_HEADER.size - 4)
+            *fields, crc = _TMP_HEADER.unpack(header)
+            payload = self._receive_exact(fields[4])
+            if (
+                fields[:4] != [1, 1, _TMP_TYPE_DATA, 0]
+                or _tmp_crc(header, payload=payload) != crc
+            ):
+                raise DecoError("Corrupt TMP packet from Deco")
+            return payload
+
+    @staticmethod
+    def _parse_response(
+        payload: bytes, *, opcode: int, txid: int
+    ) -> tuple[bytes, int, int, int] | None:
+        """
+        business packet を (本文の断片, 本文全体の CRC32, 全体長, offset) に分ける。
+
+        要求 (opcode・txid) と別の取引の packet なら None。
+
+        Raises:
+            DecoError: ルーターが要求を拒否した、または応答の形式が不正。
+        """
+        if len(payload) < _BUSINESS_HEADER.size:
+            raise DecoError(f"Truncated TMP response for opcode {opcode:#06x}")
+        (
+            version,
+            business_version,
+            reply_opcode,
+            ptype,
+            err,
+            reply_txid,
+            body_crc,
+            total,
+            offset,
+        ) = _BUSINESS_HEADER.unpack_from(payload)
+        # 別の取引の応答やルーターからの通知 (クライアントの接続イベント等) は読み捨てる。
+        # 通知の txid はルーター側の番号なので、要求の txid と重なりうる。
+        if (reply_opcode, reply_txid) != (opcode, txid):
+            return None
+        if err != 0:
+            raise DecoError(
+                f"Deco rejected TMP opcode {opcode:#06x} (err {err})", error_code=err
+            )
+        if (version, business_version) != (1, 2) or ptype != _PTYPE_RESPONSE:
+            raise DecoError(
+                f"Unexpected TMP response type {ptype} for opcode {opcode:#06x}"
+            )
+        return payload[_BUSINESS_HEADER.size :], body_crc, total, offset
 
     def _receive_response(self, *, opcode: int, txid: int) -> bytes:
         """要求 (opcode・txid) への応答を、分割されていれば PULL で続きを取ってつないで返す。"""
         data = bytearray()
-        expected_total: int | None = None
+        # 先頭の断片が宣言した (全体長, 本文全体の CRC32)。後の断片も同じ値を持つ。
+        declared: tuple[int, int] | None = None
         while True:
-            payload = self._receive_payload()
-            if len(payload) < _BUSINESS_HEADER.size:
-                raise DecoError(f"Truncated TMP response for opcode {opcode:#06x}")
-            _, _, reply_opcode, ptype, err, reply_txid, _, total, offset = (
-                _BUSINESS_HEADER.unpack_from(payload)
+            parsed = self._parse_response(
+                self._receive_payload(), opcode=opcode, txid=txid
             )
-            # 別の取引の応答やルーターからの通知 (クライアントの接続イベント等) は読み捨てる。
-            # 通知の txid はルーター側の番号なので、要求の txid と重なりうる。
-            if (reply_opcode, reply_txid) != (opcode, txid):
+            if parsed is None:
                 continue
-            if err != 0:
-                raise DecoError(
-                    f"Deco rejected TMP opcode {opcode:#06x} (err {err})",
-                    error_code=err,
-                )
-            if ptype != _PTYPE_RESPONSE:
-                raise DecoError(
-                    f"Unexpected TMP response type {ptype} for opcode {opcode:#06x}"
-                )
-            fragment = payload[_BUSINESS_HEADER.size :]
-            if expected_total is None:
+            fragment, body_crc, total, offset = parsed
+            if declared is None:
                 if total > _MAX_RESPONSE:
                     raise DecoError(
                         f"TMP response for opcode {opcode:#06x} is too large ({total} bytes)"
                     )
-                expected_total = total
+                declared = (total, body_crc)
             consistent = (
-                total == expected_total
+                (total, body_crc) == declared
                 and offset == len(data)
                 and (fragment or total == 0)
                 and len(data) + len(fragment) <= total
@@ -300,6 +335,9 @@ class TmpClient:
                 )
             data += fragment
             if len(data) == total:
+                # 分割された応答でも、business の CRC32 は断片ではなく本文全体のもの。
+                if total and zlib.crc32(data) != body_crc:
+                    raise DecoError(f"Corrupt TMP response for opcode {opcode:#06x}")
                 return bytes(data)
             self._send(
                 _business_packet(

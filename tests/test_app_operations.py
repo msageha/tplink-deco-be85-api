@@ -353,6 +353,21 @@ def test_app_operation_with_inconsistent_fragments_is_502(stack: Stack) -> None:
     assert response.status_code == 502
 
 
+@pytest.mark.parametrize("corrupt", ["packet", "body"])
+@pytest.mark.parametrize("size", [10, FRAGMENT_SIZE * 2])
+def test_app_operation_with_corrupt_crc_is_502(
+    *, stack: Stack, corrupt: str, size: int
+) -> None:
+    """TMP の packet か本文全体の CRC32 が合わない応答は、分割の有無によらず受け付けない。"""
+    stack.reset()
+    stack.app.corrupt = corrupt
+    stack.app.respond_result(0x401A, result={"text": "x" * size})
+
+    response = stack.api.post("/api/app/device/led/read", json={})
+
+    assert response.status_code == 502
+
+
 def test_app_login_interrupted_by_router_is_504_not_401(stack: Stack) -> None:
     """認証の結果が返らないまま切れたときは、資格情報の不一致ではなく通信の失敗として返す。"""
     stack.reset_logged_out()

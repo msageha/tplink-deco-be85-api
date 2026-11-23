@@ -70,9 +70,13 @@ def _tmp_packet(payload: bytes, *, seq: int) -> bytes:
 def _business_packet(
     *, opcode: int, txid: int, body: bytes = b"", offset: int = 0, err: int = 0
 ) -> bytes:
-    """応答の本文 body のうち、offset から最大 FRAGMENT_SIZE byte を載せた応答。"""
+    """
+    応答の本文 body のうち、offset から最大 FRAGMENT_SIZE byte を載せた応答。
+
+    実機と同じく、CRC32 は分割しても断片ではなく本文全体のものを入れる。
+    """
     chunk = body[offset : offset + FRAGMENT_SIZE]
-    crc = zlib.crc32(chunk) if chunk else 0
+    crc = zlib.crc32(body) if body else 0
     header = _BUSINESS_HEADER.pack(
         1, 2, opcode, _PTYPE_RESPONSE, err, txid, crc, len(body), offset
     )
@@ -105,19 +109,25 @@ class _Session:
             buffer += chunk
         return buffer
 
-    def _send(self, payload: bytes) -> None:
+    def _send(self, payload: bytes, *, corrupt_crc: bool = False) -> None:
         self._seq += 1
-        self._channel.sendall(_tmp_packet(payload, seq=self._seq))
+        packet = _tmp_packet(payload, seq=self._seq)
+        if corrupt_crc:
+            packet = packet[:15] + bytes([packet[15] ^ 1]) + packet[16:]
+        self._channel.sendall(packet)
 
     def _send_fragment(self, *, opcode: int, txid: int, offset: int) -> None:
         _, body = self._pending[txid]
         packet = _business_packet(opcode=opcode, txid=txid, body=body, offset=offset)
         # fragment_skew は先頭以外の断片の offset を実際の位置からずらして送る (壊れた応答を模す)。
+        header = list(_BUSINESS_HEADER.unpack_from(packet))
         if offset and self._fake.fragment_skew:
-            header = list(_BUSINESS_HEADER.unpack_from(packet))
             header[-1] += self._fake.fragment_skew
-            packet = _BUSINESS_HEADER.pack(*header) + packet[_BUSINESS_HEADER.size :]
-        self._send(packet)
+        # corrupt は応答の CRC を壊す: "body" は business の本文全体の CRC、"packet" は TMP の packet の CRC。
+        if self._fake.corrupt == "body":
+            header[6] ^= 1
+        packet = _BUSINESS_HEADER.pack(*header) + packet[_BUSINESS_HEADER.size :]
+        self._send(packet, corrupt_crc=self._fake.corrupt == "packet")
         if offset + FRAGMENT_SIZE >= len(body):
             del self._pending[txid]
 
@@ -263,6 +273,7 @@ class FakeTmp:
         self.reachable = True
         self.drops_during_auth = False
         self.fragment_skew = 0
+        self.corrupt = ""
         self._responses: dict[int, Any] = {}
         self._calls: list[TmpCall] = []
         self._logins = 0
@@ -325,6 +336,7 @@ class FakeTmp:
             self.reachable = True
             self.drops_during_auth = False
             self.fragment_skew = 0
+            self.corrupt = ""
             self._responses = {}
             self._calls = []
             self._logins = 0
