@@ -500,11 +500,25 @@ class Stack:
         """`reset` に加えて、API サーバーとルーターの両方を、luci・TMP ともログインしていない状態にする。"""
         self.router.reset()
         self.app.reset()
-        self.app.drop_sessions()
+        self.drop_tmp_sessions()
         self.api.post("/api/logout").raise_for_status()
         self.router.expire_session()
         # ログアウトのリクエストの記録を消す。
         self.router.reset()
+
+    def drop_tmp_sessions(self) -> None:
+        """
+        TMP のセッションをルーター側から切り、API サーバーが切断を認識するまで待つ。
+
+        切断は API サーバーの SSH のスレッドが非同期に知るので、待たずに次の要求を送ると、
+        切れたセッションで送って 504 になりうる。
+        """
+        self.app.drop_sessions()
+        deadline = time.monotonic() + 10
+        while self.api.get("/api/health").json()["tmp_connected"]:
+            if time.monotonic() > deadline:
+                raise RuntimeError("API server did not notice the dropped TMP session")
+            time.sleep(0.05)
 
 
 _STARTED_RE = re.compile(r"Uvicorn running on (http://\S+)")

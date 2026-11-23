@@ -6,7 +6,6 @@ POST /api/app/<controller>/<form>/<operation>: Deco アプリの経路 (TMP) の
 """
 
 import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -220,12 +219,7 @@ def test_app_session_closed_by_router_is_reopened_on_next_request(
     stack.reset_logged_out()
     stack.app.respond_result(0x401A, result={"enable": True})
     assert stack.api.post("/api/app/device/led/read", json={}).status_code == 200
-    stack.app.drop_sessions()
-    # 切断が API サーバーに届く前の要求は、送った後に切断を知るので 504 になりうる。届いてから送る。
-    deadline = time.monotonic() + 10
-    while stack.api.get("/api/health").json()["tmp_connected"]:
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+    stack.drop_tmp_sessions()
 
     response = stack.api.post("/api/app/device/led/read", json={})
 
