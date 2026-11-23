@@ -251,3 +251,20 @@ class RawRequest(_Request):
     @classmethod
     def _strip_leading_slash(cls, value: Any) -> Any:
         return value.strip().lstrip("/") if isinstance(value, str) else value
+
+
+class OperationRequest(_Request):
+    """luci form・TMP opcode の 1 操作の要求。"""
+
+    params: dict[str, Any] | None = Field(
+        default=None, description="ルーターへそのまま渡す params。省略すると送らない"
+    )
+
+
+class DestructiveOperationRequest(OperationRequest):
+    """再起動・初期化・ファームウェアの更新など、ネットワークを止めるか元に戻せない操作の要求。"""
+
+    # 破壊的な操作の確認なので、"true" や 1 を true とみなす型変換を受け付けない。
+    confirm: bool = Field(
+        strict=True, description="誤操作防止。JSON の true のときだけ実行する"
+    )

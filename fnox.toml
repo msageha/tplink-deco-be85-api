@@ -12,3 +12,4 @@ identity = { provider = "onepass", value = "age-identity" }
 
 [secrets]
 PASSWORD = { provider = "age", value = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBDbWRtRno4aUtBM01ubE1DeVZvTlN0d2p0cmE1Ui9pZFJ3TVVhK0xucUFvCld2TU9QWjljM0JWZlQvajFjd3ZlUGx5dGFya1NSOUdER1lPdExWQzhzUzgKLT4gMHFSLWdyZWFzZSA4c2MgewphZwotLS0geU1LTzJuZ2ZIMWw5M05XK3BBUVZKWCtYNWU3ZGRDN2tjdC9IdGFmdVFJZwpnJOWRo2hkp9od/DqA/8zpjtx9y7rf1EqV/QwIW5OHMaFCCDyxSY8FDgS5okffurI=", description = "Deco の管理パスワード (TP-Link ID のパスワード)" }
+TPLINK_EMAIL = { provider = "age", value = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBuSnJrUmVKTDdqWURBZXcxT1lVMFMyQXoxcis1bmk0U1p5UWJxYVFXdjEwCm9LWUVqeTlhcThvblNsNWx4SlhJbnUzTXgwek5EZWw5V1E5Q29IUjI0MWsKLT4gUF1lXE9MLWdyZWFzZSB0K25CdCBULkZFRApkRlZqNy9OYkM1aE1penRqdUU0Ci0tLSBNa1pvTCtLdnVXZC9yVW0xK05vMFJHVWxaWkNhOEdUeUdzU0k1WmpOT0d3ClHU/A5abxtsIbN8FP+P17ggsOPnydhgVK1dPUla6kIMYf7xy+PLO/tTWhtQ0hQu9Yzebmoe/Kpp", description = "Deco のオーナーの TP-Link ID の email (Deco アプリと同じ TMP の SSH 認証に使う)" }

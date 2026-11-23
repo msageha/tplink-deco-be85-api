@@ -20,13 +20,15 @@ node = "26.13.1"
 
 [env]
 DECO_HOST = "http://172.16.1.1"
+# Deco の TMP (SSH) の ECDSA の host key。`ssh-keyscan -p 20001 -t ecdsa <Deco のアドレス>` の出力の、鍵の種類と base64 の部分。
+TMP_HOST_KEY = "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBADdRROOGJh7x0fNw37FuWogH0qHpCZQo+oe0PA2fr4KargUPdVfUDKCRzhUKA+vi4WpPiQl1YKddp+cOjhrGCt2OwEmgBpHkbFiJxxTzejpNlstvSk308wlfM+32dhmV3NwiQ+uwRAk2MMCOKysVSifW2i8RXXRM9/HYEGMwMBfleRegw=="
 
-# secret (PASSWORD: Deco の管理パスワード) は fnox.toml で管理する。mise run dev / run-image は
-# fnox exec で復号してアプリに環境変数として渡す (復号できなければ起動しない)。
+# secret (PASSWORD: Deco の管理パスワード、TPLINK_EMAIL: Deco のオーナーの TP-Link ID) は fnox.toml で管理する。
+# mise run dev / run-image は fnox exec で復号してアプリに環境変数として渡す (復号できなければ起動しない)。
 
 [tasks.dev]
 description = "Run the API server with auto-reload on http://127.0.0.1:8000"
-run = "fnox exec --only PASSWORD --if-missing error -- uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000"
+run = "fnox exec --only PASSWORD --only TPLINK_EMAIL --if-missing error -- uv run uvicorn main:app --reload --app-dir src --host 127.0.0.1 --port 8000"
 
 [tasks.test]
 description = "Run pytest under coverage and print the report"
@@ -87,9 +89,9 @@ description = "Build the Docker image deco-be85-api:latest"
 run = "docker build -t deco-be85-api:latest ."
 
 [tasks.run-image]
-description = "Run the Docker image on port 8000 with PASSWORD from fnox and the other settings from the environment"
-# -e NAME (値なし) は設定されている変数だけを渡すので、未設定の ACCOUNT / VERIFY_SSL / TIMEOUT はアプリ (src/settings.py) の既定値になる
-run = "fnox exec --only PASSWORD --if-missing error -- docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges -p 8000:8000 -e PASSWORD -e DECO_HOST -e ACCOUNT -e VERIFY_SSL -e TIMEOUT deco-be85-api:latest"
+description = "Run the Docker image on port 8000 with PASSWORD and TPLINK_EMAIL from fnox and the other settings from the environment"
+# -e NAME (値なし) は設定されている変数だけを渡すので、未設定の ACCOUNT / VERIFY_SSL / TIMEOUT / TMP_PORT はアプリ (src/settings.py) の既定値になる
+run = "fnox exec --only PASSWORD --only TPLINK_EMAIL --if-missing error -- docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges -p 8000:8000 -e PASSWORD -e TPLINK_EMAIL -e DECO_HOST -e TMP_HOST_KEY -e ACCOUNT -e VERIFY_SSL -e TIMEOUT -e TMP_PORT deco-be85-api:latest"
 
 [tasks.check-image]
 description = "Build the Docker image and check that it serves /api/health with a read-only root filesystem and no capabilities"
@@ -97,7 +99,8 @@ depends = ["build-image"]
 # /api/health はルーターに接続しないので、ダミーの設定で起動できる。host 側の port は空きを Docker に選ばせ、開発サーバーと衝突させない。
 run = """
 container=$(docker create --read-only --cap-drop ALL --security-opt no-new-privileges \
-  -p 127.0.0.1::8000 -e PASSWORD=dummy -e DECO_HOST=127.0.0.1 deco-be85-api:latest)
+  -p 127.0.0.1::8000 -e PASSWORD=dummy -e TPLINK_EMAIL=dummy@example.com -e DECO_HOST=http://127.0.0.1 -e TMP_HOST_KEY \
+  deco-be85-api:latest)
 trap 'docker rm -f "$container" >/dev/null' EXIT
 trap 'exit 130' INT TERM
 docker start "$container" >/dev/null

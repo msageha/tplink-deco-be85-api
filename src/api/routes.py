@@ -7,9 +7,11 @@ from api.models import (
     CloudDeviceInfo,
     DashboardSummary,
     DecoNode,
+    DestructiveOperationRequest,
     DeviceMode,
     FirmwareStatus,
     MacClone,
+    OperationRequest,
     Performance,
     RawRequest,
     RebootRequest,
@@ -20,16 +22,29 @@ from api.models import (
     WlanBandToggle,
 )
 from api.service import DecoService
-from deco import DecoError
+from deco import (
+    LUCI_OPERATIONS,
+    TMP_OPERATIONS,
+    DecoClient,
+    DecoError,
+    LuciOperation,
+    TmpClient,
+    TmpOperation,
+)
 
 router = APIRouter(prefix="/api")
 
 
-def _get_service(request: Request) -> DecoService:
+def _get_service(request: Request) -> DecoService[DecoClient]:
     return request.app.state.deco
 
 
-type Service = Annotated[DecoService, Depends(_get_service)]
+def _get_tmp_service(request: Request) -> DecoService[TmpClient]:
+    return request.app.state.tmp
+
+
+type Service = Annotated[DecoService[DecoClient], Depends(_get_service)]
+type TmpService = Annotated[DecoService[TmpClient], Depends(_get_tmp_service)]
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -47,12 +62,13 @@ def _object(value: Any) -> dict[str, Any]:
 
 
 @router.get("/health", tags=["system"])
-async def health(service: Service) -> dict[str, Any]:
-    """ルーターに触れずに、サーバー状態とログイン状況を返す。"""
+async def health(*, service: Service, tmp: TmpService) -> dict[str, Any]:
+    """ルーターに触れずに、サーバー状態とログイン状況 (luci・TMP) を返す。"""
     return {
         "status": "ok",
         "host": service.client.host,
         "logged_in": service.client.logged_in,
+        "tmp_connected": tmp.client.connected,
     }
 
 
@@ -376,3 +392,88 @@ async def raw(*, body: RawRequest, service: Service) -> dict[str, Any]:
     return await service.run(
         service.client.raw, body.path, operation=body.operation, params=body.params
     )
+
+
+def _require_confirm(body: DestructiveOperationRequest) -> None:
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400, detail="Set confirm=true to run this operation"
+        )
+
+
+_CONFIRM_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {"description": "confirm が false"}
+}
+_TMP_RESPONSES: dict[int | str, dict[str, Any]] = {
+    413: {"description": "params が TMP の 1 packet に収まらない"}
+}
+
+
+def _add_luci_route(entry: LuciOperation) -> None:
+    """luci の 1 操作を `POST /api/luci/<module>/<form>/<operation>` として登録する。"""
+
+    async def call(*, body: OperationRequest | None = None, service: Service) -> Any:
+        params = body.params if body is not None else None
+        return await service.run(
+            service.client.request,
+            entry.path,
+            operation=entry.operation,
+            params=params,
+        )
+
+    async def call_destructive(
+        *, body: DestructiveOperationRequest, service: Service
+    ) -> Any:
+        _require_confirm(body)
+        return await call(body=body, service=service)
+
+    module = entry.module.removeprefix("admin/")
+    router.add_api_route(
+        f"/luci/{module}/{entry.form}/{entry.operation}",
+        call_destructive if entry.destructive else call,
+        methods=["POST"],
+        name=f"luci_{module}_{entry.form}_{entry.operation}",
+        summary=f"{entry.path} の {entry.operation}",
+        tags=[f"luci: {module}"],
+        responses=_CONFIRM_RESPONSES if entry.destructive else None,
+        openapi_extra={
+            "x-deco-luci-path": entry.path,
+            "x-deco-operation": entry.operation,
+            "x-deco-destructive": entry.destructive,
+        },
+    )
+
+
+def _add_tmp_route(entry: TmpOperation) -> None:
+    """TMP の 1 操作を `POST /api/app/<controller>/<form>/<operation>` として登録する。"""
+
+    async def call(*, body: OperationRequest | None = None, tmp: TmpService) -> Any:
+        params = body.params if body is not None else None
+        return await tmp.run(tmp.client.call, entry.opcode, params=params)
+
+    async def call_destructive(
+        *, body: DestructiveOperationRequest, tmp: TmpService
+    ) -> Any:
+        _require_confirm(body)
+        return await call(body=body, tmp=tmp)
+
+    router.add_api_route(
+        f"/app/{entry.controller}/{entry.form}/{entry.operation}",
+        call_destructive if entry.destructive else call,
+        methods=["POST"],
+        name=f"app_{entry.controller}_{entry.form}_{entry.operation}",
+        summary=f"opcode {entry.opcode:#06x} ({entry.form} の {entry.operation})",
+        tags=[f"app: {entry.controller}"],
+        responses=_TMP_RESPONSES | (_CONFIRM_RESPONSES if entry.destructive else {}),
+        openapi_extra={
+            "x-deco-tmp-opcode": entry.opcode,
+            "x-deco-operation": entry.operation,
+            "x-deco-destructive": entry.destructive,
+        },
+    )
+
+
+for _luci_entry in LUCI_OPERATIONS:
+    _add_luci_route(_luci_entry)
+for _tmp_entry in TMP_OPERATIONS:
+    _add_tmp_route(_tmp_entry)
