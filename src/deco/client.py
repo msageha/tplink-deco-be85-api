@@ -233,16 +233,22 @@ class DecoClient:
             envelope = resp.json()
         except ValueError:
             envelope = None
-        # セッション切れは 401/403 か、JSON でないログイン画面の HTML で返る。ほかの応答 (Content-Type
-        # が HTML でも本文が JSON のもの、HTML でない壊れた本文) は操作が適用されたか分からず、
-        # 再送すると write を二重に適用しうるので、再送しない。
+        # セッション切れは 401/403 か、JSON でないログイン画面の HTML で返る。ほかのクライアントのログインで
+        # セッションが無効になったときは、HTTP 200 で暗号文の空な `{"data": ""}` だけが返る (BE85 の FW 1.2.4 で確認)。
+        # ほかの応答 (Content-Type が HTML でも本文が JSON のもの、HTML でない壊れた本文) は操作が適用されたか
+        # 分からず、再送すると write を二重に適用しうるので、再送しない。
         expired = resp.status_code in {
             HTTPStatus.UNAUTHORIZED,
             HTTPStatus.FORBIDDEN,
         } or (
             resp.status_code == HTTPStatus.OK
-            and envelope is None
-            and resp.headers.get("content-type", "").startswith("text/html")
+            and (
+                (
+                    envelope is None
+                    and resp.headers.get("content-type", "").startswith("text/html")
+                )
+                or envelope == {"data": ""}
+            )
         )
         if expired:
             # 一度だけ再ログインして再送する。
