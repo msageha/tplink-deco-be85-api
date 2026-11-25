@@ -1,7 +1,7 @@
 """TP-Link Deco のローカル (luci) API クライアント。"""
 
 import json
-from base64 import b64decode, b64encode
+from base64 import b64decode
 from contextlib import suppress
 from hashlib import md5
 from http import HTTPStatus
@@ -264,7 +264,8 @@ class DecoClient:
             return self._send(path, body=body, retry=False)
         if not isinstance(envelope, dict):
             raise DecoError(
-                f"Deco returned HTTP {resp.status_code} without an envelope for '{path}'"
+                f"Deco returned HTTP {resp.status_code} without an envelope for '{path}': "
+                f"{_excerpt(resp)}"
             )
         try:
             # isinstance は dict の型引数を絞れない。JSON object のキーは常に str になる。
@@ -394,24 +395,6 @@ class DecoClient:
 
     def get_wlan(self) -> dict[str, Any]:
         return self._read("admin/wireless?form=wlan")
-
-    def set_wlan(self, *, band: str, network: str, settings: dict[str, Any]) -> Any:
-        """
-        band と network (host / guest) の組 1 つ分の Wi-Fi 設定を書き込む。
-
-        ssid / password はルーターが base64 で保持するので、平文を受け取って変換する。
-        """
-        encoded = {
-            key: b64encode(value.encode()).decode()
-            if key in ("ssid", "password")
-            else value
-            for key, value in settings.items()
-        }
-        return self.request(
-            "admin/wireless?form=wlan",
-            operation="write",
-            params={band: {network: encoded}},
-        )
 
     def get_wireless_power(self) -> dict[str, Any]:
         return self._read("admin/wireless?form=power")

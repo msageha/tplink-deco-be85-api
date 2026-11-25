@@ -209,18 +209,25 @@ async def wireless_get(service: Service) -> dict[str, Any]:
 
 
 @router.post("/wireless", tags=["wireless"])
-async def wireless_toggle(*, body: WlanBandToggle, service: Service) -> dict[str, Any]:
-    """band 単位で Wi-Fi を ON / OFF する。接続中のクライアントは一時的に切断される。"""
+async def wireless_toggle(*, body: WlanBandToggle, tmp: TmpService) -> dict[str, Any]:
+    """
+    band 単位で Wi-Fi を ON / OFF する。接続中のクライアントは一時的に切断される。
+
+    guest で band を省略すると、Deco アプリのゲスト Wi-Fi のスイッチと同じ範囲の band を切り替える。
+    """
     settings = {"enable": body.enable}
-    await service.run(
-        service.client.set_wlan, band=body.band, network=body.network, settings=settings
+    if body.band is None:
+        bands = await tmp.run(tmp.client.set_guest_enable, enable=body.enable)
+        return {"updated": {band: {body.network: settings} for band in bands}}
+    await tmp.run(
+        tmp.client.set_wlan, band=body.band, network=body.network, settings=settings
     )
     return {"updated": {body.band: {body.network: settings}}}
 
 
 @router.post("/wireless/config", tags=["wireless"])
 async def wireless_config(
-    *, body: WirelessConfigUpdate, service: Service
+    *, body: WirelessConfigUpdate, tmp: TmpService
 ) -> dict[str, Any]:
     """
     band と network の組 1 つ分の Wi-Fi 設定 (SSID / パスワード / channel など) を変更する。
@@ -229,8 +236,8 @@ async def wireless_config(
     接続中のクライアントは一時的に切断される。
     """
     settings = body.settings.model_dump(exclude_none=True)
-    result = await service.run(
-        service.client.set_wlan, band=body.band, network=body.network, settings=settings
+    result = await tmp.run(
+        tmp.client.set_wlan, band=body.band, network=body.network, settings=settings
     )
     if "password" in settings:
         settings["password"] = "***"  # noqa: S105 - 応答に平文のパスワードを返さないための伏せ字

@@ -1,4 +1,8 @@
-"""Wi-Fi 設定の書き込み: POST /api/wireless (ON / OFF) と POST /api/wireless/config。"""
+"""
+Wi-Fi 設定の書き込み: POST /api/wireless (ON / OFF) と POST /api/wireless/config。
+
+どちらも Deco アプリと同じ TMP の経路 (wlan の write の opcode) で書き込む。
+"""
 
 from base64 import b64encode
 from itertools import product
@@ -10,9 +14,12 @@ from hypothesis import example, given, strategies as st
 from tests.harness import Stack
 from tests.strategies import as_json, json_values, merged
 
-_WLAN = "admin/wireless?form=wlan"
+# Deco アプリが Wi-Fi の設定の書き込みに送る opcode。
+_WLAN_WRITE = 0x4008
 _BANDS = ["band2_4", "band5_1", "band6"]
 _NETWORKS = ["host", "guest"]
+# band の radio に書く設定と、TMP での名前。
+_RADIO_FIELDS = {"channel": "channel", "channel_width": "htmode", "mode": "hwmode"}
 _SETTING_FIELDS = {
     "enable": st.booleans(),
     "ssid": st.text(),
@@ -29,11 +36,7 @@ def _b64(text: str) -> str:
 
 
 def _wlan_writes(stack: Stack) -> list[Any]:
-    return [
-        c.params
-        for c in stack.router.calls
-        if c.path == _WLAN and c.operation == "write"
-    ]
+    return [c.body.get("params") for c in stack.app.calls if c.opcode == _WLAN_WRITE]
 
 
 @pytest.mark.parametrize(
@@ -43,7 +46,7 @@ def test_toggle_writes_enable_for_the_band_and_network(
     *, stack: Stack, band: str, network: str, enable: bool
 ) -> None:
     stack.reset()
-    stack.router.respond_result(_WLAN, result={}, operation="write")
+    stack.app.respond_result(_WLAN_WRITE, result={})
 
     response = stack.api.post(
         "/api/wireless", json={"band": band, "network": network, "enable": enable}
@@ -53,20 +56,6 @@ def test_toggle_writes_enable_for_the_band_and_network(
     written = {band: {network: {"enable": enable}}}
     assert as_json(response.json()) == as_json({"updated": written})
     assert as_json(_wlan_writes(stack)) == as_json([written])
-
-
-def test_toggle_after_session_expiry_writes_once(stack: Stack) -> None:
-    stack.reset()
-    stack.router.respond_result(_WLAN, result={}, operation="write")
-    assert stack.api.post("/api/login").status_code == 200
-    stack.router.expire_session()
-
-    response = stack.api.post("/api/wireless", json={"band": "band6", "enable": True})
-
-    assert response.status_code == 200
-    assert as_json(_wlan_writes(stack)) == as_json(
-        [{"band6": {"host": {"enable": True}}}]
-    )
 
 
 @pytest.mark.parametrize(
@@ -80,9 +69,7 @@ def test_write_rejected_by_router_is_502_and_not_retried(
     *, stack: Stack, endpoint: str, body: dict[str, Any]
 ) -> None:
     stack.reset()
-    stack.router.respond(
-        _WLAN, envelope={"error_code": -40101, "msg": "rejected"}, operation="write"
-    )
+    stack.app.respond(_WLAN_WRITE, envelope={"error_code": -40101, "msg": "rejected"})
 
     response = stack.api.post(endpoint, json=body)
 
@@ -93,7 +80,7 @@ def test_write_rejected_by_router_is_502_and_not_retried(
 
 def test_toggle_targets_host_network_by_default(stack: Stack) -> None:
     stack.reset()
-    stack.router.respond_result(_WLAN, result={}, operation="write")
+    stack.app.respond_result(_WLAN_WRITE, result={})
 
     response = stack.api.post("/api/wireless", json={"band": "band6", "enable": False})
 
@@ -131,6 +118,7 @@ def test_invalid_toggle_is_rejected_without_contacting_router(
 
     assert response.status_code == 422
     assert stack.router.arrivals == []
+    assert stack.app.calls == []
 
 
 @st.composite
@@ -163,9 +151,13 @@ def test_config_writes_given_fields_with_ssid_and_password_in_base64(
     settings: dict[str, Any],
     result: Any,
 ) -> None:
-    """null のフィールドは書き込まず、network の省略は host を指す。"""
+    """
+    null のフィールドは書き込まず、network の省略は host を指す。
+
+    channel / channel_width / mode は network によらず band の radio に TMP の名前で書く。
+    """
     stack.reset()
-    stack.router.respond_result(_WLAN, result=result, operation="write")
+    stack.app.respond_result(_WLAN_WRITE, result=result)
     body = {"band": band, "settings": settings}
     if network is not None:
         body["network"] = network
@@ -175,10 +167,20 @@ def test_config_writes_given_fields_with_ssid_and_password_in_base64(
     assert response.status_code == 200
     target = network or "host"
     given_fields = {k: v for k, v in settings.items() if v is not None}
-    sent = {
-        k: _b64(v) if k in {"ssid", "password"} else v for k, v in given_fields.items()
+    network_sent = {
+        k: _b64(v) if k in {"ssid", "password"} else v
+        for k, v in given_fields.items()
+        if k not in _RADIO_FIELDS
     }
-    assert as_json(_wlan_writes(stack)) == as_json([{band: {target: sent}}])
+    radio_sent = {
+        _RADIO_FIELDS[k]: str(v) if k == "channel" else v
+        for k, v in given_fields.items()
+        if k in _RADIO_FIELDS
+    }
+    sent = ({target: network_sent} if network_sent else {}) | (
+        {"radio": radio_sent} if radio_sent else {}
+    )
+    assert as_json(_wlan_writes(stack)) == as_json([{band: sent}])
     shown = given_fields | ({"password": "***"} if "password" in given_fields else {})
     assert as_json(response.json()) == as_json(
         {"updated": {band: {target: shown}}, "result": result}
@@ -242,6 +244,7 @@ def test_invalid_config_is_rejected_without_writing(
 
     assert response.status_code == 422
     assert stack.router.arrivals == []
+    assert stack.app.calls == []
 
 
 # パスワードを足しても不正なままの入力 (band・network・未知のフィールド)
@@ -288,3 +291,4 @@ def test_config_with_text_not_valid_unicode_is_rejected_without_writing(
 
     assert response.status_code == 422
     assert stack.router.arrivals == []
+    assert stack.app.calls == []

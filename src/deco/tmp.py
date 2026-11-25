@@ -13,7 +13,7 @@ import struct
 import threading
 import time
 import zlib
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
 from hashlib import sha1
 from typing import Any, NamedTuple, cast
@@ -50,6 +50,10 @@ _PTYPE_PULL = 4
 _PTYPE_RESPONSE = 5
 # セッションの割り当て。本文なしで送り、応答の token は以後の要求に使わない。
 _OPCODE_ALLOC = 0x0001
+_OPCODE_WLAN_READ = 0x4009
+_OPCODE_WLAN_WRITE = 0x4008
+# 無線の設定のうち、band の radio (network によらず band で 1 つ) に属するものと、その TMP での名前。
+_RADIO_FIELDS = {"channel": "channel", "channel_width": "htmode", "mode": "hwmode"}
 
 
 def _tmp_crc(header: bytes, *, payload: bytes) -> int:
@@ -439,6 +443,67 @@ class TmpClient:
         except DecoError:
             self.close()
             raise
+
+    def set_wlan(self, *, band: str, network: str, settings: dict[str, Any]) -> Any:
+        """
+        band と network (host / guest) の組 1 つ分の Wi-Fi 設定を書き込む。
+
+        luci の `admin/wireless?form=wlan` の write は guest の書き込みを HTTP 500 で落とすので、
+        Deco アプリと同じ TMP の経路で書く。settings の名前は luci の read の形 (`GET /api/wireless`)
+        に合わせ、TMP の形に置き換えて送る: ssid / password は平文を受け取って base64 にし、
+        channel / channel_width / mode は band の radio (channel / htmode / hwmode) に書く。
+        TMP が文字列で持つ数値 (channel・access_duration・bandwidth_limit の上限) は文字列にする。
+        """
+        params: dict[str, Any] = {}
+        network_settings: dict[str, Any] = {}
+        radio: dict[str, Any] = {}
+        for key, value in settings.items():
+            if key in _RADIO_FIELDS:
+                radio[_RADIO_FIELDS[key]] = str(value) if key == "channel" else value
+            elif key in ("ssid", "password"):
+                network_settings[key] = b64encode(value.encode()).decode()
+            elif key == "access_duration":
+                network_settings[key] = str(value)
+            elif key == "bandwidth_limit":
+                network_settings[key] = {
+                    k: v if k == "enable" else str(v) for k, v in value.items()
+                }
+            else:
+                network_settings[key] = value
+        if network_settings:
+            params[network] = network_settings
+        if radio:
+            params["radio"] = radio
+        return self.call(_OPCODE_WLAN_WRITE, params={band: params})
+
+    def set_guest_enable(self, *, enable: bool) -> list[str]:
+        """
+        Deco アプリのゲスト Wi-Fi のスイッチと同じ範囲の band のゲストを、まとめて切り替える。
+
+        guest の `is_separate` が true の band (BE85 の 6 GHz) は、アプリでも別に設定する
+        ゲストなので切り替えない。未設定のままでもパスワードの無い OWE の設定を持ちうるので、
+        ここで有効にするとパスワードの無いゲスト SSID が出るため。切り替えた band を返す。
+
+        Raises:
+            DecoError: 切り替える band が無い、または wlan の read の応答が不正。
+        """
+        wlan = self.call(_OPCODE_WLAN_READ)
+        if not isinstance(wlan, dict):
+            raise DecoError("Unexpected TMP wlan response: not a JSON object")
+        bands = [
+            band
+            for band, config in cast("dict[str, Any]", wlan).items()
+            if isinstance(config, dict)
+            and isinstance(guest := cast("dict[str, Any]", config).get("guest"), dict)
+            and cast("dict[str, Any]", guest).get("is_separate") is not True
+        ]
+        if not bands:
+            raise DecoError("Deco reported no guest network to toggle")
+        self.call(
+            _OPCODE_WLAN_WRITE,
+            params={band: {"guest": {"enable": enable}} for band in bands},
+        )
+        return bands
 
     def call(self, opcode: int, *, params: dict[str, Any] | None = None) -> Any:
         """

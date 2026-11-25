@@ -181,12 +181,38 @@ curl -X POST http://127.0.0.1:8000/api/wireless \
 
 `band` は `band2_4` / `band5_1` / `band6`、`network` は `host` / `guest` (enum で検証)。
 
+ゲスト Wi-Fi は band ごとの設定です。`network` が `guest` のときは `band` を省略でき、Deco アプリの
+ゲスト Wi-Fi のスイッチと同じ範囲の band をまとめて切り替えます。対象は、Deco アプリの経路の read
+(`/api/app/wireless/wlan/read`) で guest の `is_separate` が true でない band (BE85 では 2.4 GHz と 5 GHz) です。
+6 GHz のゲストはアプリでも別に設定するもので、未設定のまま有効にするとパスワードの無い (OWE の)
+SSID が出うるので含めません。応答の `updated` に、切り替えた band が入ります。
+
+```bash
+# ゲスト Wi-Fi をまとめて止める
+curl -X POST http://127.0.0.1:8000/api/wireless \
+  -H 'Content-Type: application/json' \
+  -d '{"network":"guest","enable":false}'
+```
+
+Wi-Fi の書き込み (`/api/wireless`・`/api/wireless/config`) は、Deco アプリと同じ TMP の経路
+(`wireless/wlan/write`、opcode `0x4008`) で行います。luci の `admin/wireless?form=wlan` の write は
+guest の書き込みを HTTP 500 で落とすので、`/api/luci/wireless/wlan/write` ではなく
+`/api/app/wireless/wlan/write` を使ってください。読み取り (`GET /api/wireless`) は luci の経路のままです。
+
 ### Wi-Fi 詳細設定の変更 `/api/wireless/config`
 
-`admin/wireless?form=wlan` への `operation:write`。`band` × `network` (host / guest) ごとに
-`enable` / `ssid` / `password` / `enable_hide_ssid` / `channel` / `channel_width` / `mode`
-を指定できます (指定したフィールドのみ送信)。`ssid` / `password` は**平文で渡すと内部で
+`band` × `network` (host / guest) ごとに
+`enable` / `ssid` / `password` / `enable_hide_ssid` / `channel` / `channel_width` / `mode` /
+`encryption_mode` / `enable_wpa3` を指定できます (指定したフィールドのみ送信)。guest では、さらに
+`host_isolation` / `access_duration` / `bandwidth_limit` (`enable` / `downstream_bandwidth` /
+`upstream_bandwidth`) も指定できます (host に指定すると 422)。`ssid` / `password` は**平文で渡すと内部で
 base64 エンコード**します (ルーターは base64 で保持するため)。
+
+- `channel` / `channel_width` / `mode` は band の radio の設定で、`network` によらず band 全体に効きます。
+  `channel` の 0 は自動です。`GET /api/wireless` の `channel` は、自動のときも実際に使っているチャンネルを
+  返すので、書いた値と一致しないことがあります。
+- `access_duration` の -1 は無期限です。`access_duration` と `bandwidth_limit` の上限の値は、
+  `/api/app/wireless/wlan/read` の guest が返す値と同じ単位で指定します。
 
 ```bash
 # ゲスト Wi-Fi の SSID とパスワードを変更
@@ -197,7 +223,7 @@ curl -X POST http://127.0.0.1:8000/api/wireless/config \
 
 > Wi-Fi 設定の変更は接続中クライアントに一時的な影響があります。`settings` は未知フィールドを
 > 拒否 (`extra="forbid"`) し、最低 1 項目の指定が必須です。設定値は `GET /api/wireless` の構造
-> (`band.host` / `band.guest`) に対応します。
+> (`band.host` / `band.guest`) に対応し、guest だけの項目は `/api/app/wireless/wlan/read` の guest で読めます。
 
 ### システムログ `/api/system/log`
 
@@ -598,7 +624,15 @@ TMP の通信は `src/deco/tmp.py` (`TmpClient`) にあります。鍵交換で�
 FW 1.2.4 の実機で、luci の read (`client?form=traffic_stat`・`addr_reservation` の `getlist`・
 `administration?form=mode` など) と、TMP の read (クライアントの一覧・ポートフォワード・DHCP の予約と lease・
 LED・`upnp`・QoS・HomeShield・Wi-Fi など。分割された応答を含む) が値を返すことを確かめています。
-write は実機で確かめていません。
+実機の write では、次を確かめています。
+
+- TMP の `wireless/wlan/write` で guest の `enable` を切り替えると反映される (band ごと・複数 band の同時)。
+- 同じ opcode で、host の `enable`・guest の `host_isolation` と `bandwidth_limit`・radio の `channel` を、
+  今の値のまま書くと受け付けられる。
+- luci の `wireless?form=beamforming`・`ieee80211r` の write は、今の値のまま書くと受け付けられる。
+- luci の `wireless?form=wlan` の write は、guest の書き込みを HTTP 500 で落とす。
+
+ほかの write は実機で確かめていません。
 
 ## 構成
 
