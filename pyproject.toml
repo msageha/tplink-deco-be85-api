@@ -178,10 +178,10 @@ protected_modules = ["fastapi"]
 allowed_importers = ["api"]
 
 [[tool.importlinter.contracts]]
-name = "暗号ライブラリを直接 import するのは deco.crypto だけ"
+name = "暗号ライブラリを直接 import するのは deco.crypto と deco.spake2p だけ"
 type = "protected"
 protected_modules = ["Crypto"]
-allowed_importers = ["deco.crypto"]
+allowed_importers = ["deco.crypto", "deco.spake2p"]
 
 [[tool.importlinter.contracts]]
 name = "HTTP client を直接 import するのは deco.client だけ"

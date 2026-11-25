@@ -60,8 +60,8 @@ mise exec -- fnox -c ./fnox.local.toml set TPLINK_EMAIL --provider age
 ```
 
 接続先の Deco の URL (`DECO_HOST`) は `mise.toml` の `[env]` で設定します。TMP の認証は SPAKE2+ (PAKE) で、
-正しいパスワードの verifier を持たない接続先はセッションを確立できず、パスワードも渡らないので、SSH の経路で
-使っていた host key の pinning は要りません。ほかの設定値にはアプリ側に既定値があり、変えるときだけ環境変数で渡します。
+正しいパスワードの verifier を持たない接続先はセッションを確立できず、パスワードも渡らないので、接続先の鍵の
+登録は要りません。ほかの設定値にはアプリ側に既定値があり、変えるときだけ環境変数で渡します。
 
 | 変数         | 既定値  | 説明                                       |
 | ------------ | ------- | ------------------------------------------ |
@@ -657,7 +657,7 @@ LED・`upnp`・QoS・HomeShield・Wi-Fi など。分割された応答を含む)
 src/
   deco/            Deco ローカル API クライアント (FastAPI 非依存・単体利用可)
     crypto.py        luci の AES / RSA 暗号化と署名 (SessionCipher)、TMP の AES-128-CCM (TmpSessionCipher)
-    spake2p.py       TMP (TPAP) の SPAKE2+ 認証 (Spake2pProver) と credential の組み立て
+    spake2p.py       TMP (TPAP) の SPAKE2+ 認証 (Spake2pProver)
     client.py        ログイン・再ログイン・エンドポイント呼び出し (DecoClient)
     tmp.py           Deco アプリの経路 (TLS + TPAP + TMP) の接続と opcode の呼び出し (TmpClient)
     catalog.py       ファームウェアから復元した luci form と TMP opcode の一覧

@@ -18,11 +18,11 @@ endpoint 一覧・ログインフロー・実機で確認した luci form の挙
 
 ## 構成
 
-- `src/deco/`: Deco ローカル API クライアント (FastAPI 非依存)。`crypto.py` (luci の AES / RSA 暗号化と署名、TMP の AES-128-CCM の `TmpSessionCipher`)、`spake2p.py` (TMP (TPAP) の SPAKE2+ 認証と credential (`<email>/<password>`) の組み立て)、`client.py` (luci のログイン・再ログイン・endpoint 呼び出し)、`tmp.py` (Deco アプリの経路: TLS + TPAP + TMP の opcode 呼び出し)、`catalog.py` (FW 1.3.0 から復元した luci form と TMP opcode の一覧。復元の方法は README の「ファームウェアから復元した操作の一覧」)、`exceptions.py`。
+- `src/deco/`: Deco ローカル API クライアント (FastAPI 非依存)。`crypto.py` (luci の AES / RSA 暗号化と署名、TMP の AES-128-CCM の `TmpSessionCipher`)、`spake2p.py` (TMP (TPAP) の SPAKE2+ 認証)、`client.py` (luci のログイン・再ログイン・endpoint 呼び出し)、`tmp.py` (Deco アプリの経路: TLS + TPAP + TMP の opcode 呼び出し)、`catalog.py` (FW 1.3.0 から復元した luci form と TMP opcode の一覧。復元の方法は README の「ファームウェアから復元した操作の一覧」)、`exceptions.py`。
 - `src/api/`: FastAPI 層 (`routes.py` / `models.py` / `service.py`)。`service.py` が `DecoClient`・`TmpClient` をそれぞれの lock + worker thread で直列実行する。`routes.py` は `catalog.py` の操作ごとに `/api/luci/...`・`/api/app/...` を登録する。`src/main.py` が例外 → HTTP status の対応を持つ。
 - `src/settings.py`: 環境変数 (pydantic-settings)。`PASSWORD` / `TPLINK_EMAIL` / `DECO_HOST` / `ACCOUNT` / `VERIFY_SSL` / `TIMEOUT` / `TMP_PORT` の名前は Home Assistant 側の compose が依存しているので変えない。
 - `tests/`: 機能ごとの e2e テスト。xdist の worker ごとに `uvicorn main:app` を subprocess で起動し、luci のログインフローと暗号化を実装した fake の Deco (`tests/harness.py`) と、TLS + TPAP + TMP を実装した fake (`tests/fake_tmp.py`。SPAKE2+ verifier は `tests/spake2p_verifier.py`) につなぐ。テストは catalog の中身を OpenAPI の `x-deco-*` から読む。入力の全域で成り立つ契約は Hypothesis の property で書く。src の内部を直接 import・patch しない (プロトコルの暗号は fake 側で別に実装する)。
-- 層の依存は `pyproject.toml` の `[tool.importlinter]` が検査する。`deco` は `api`・`main`・`settings` に依存しない。`api` は `routes` → `models` / `service`、`deco` は `client` / `tmp` → `crypto` / `exceptions` / `catalog` / `spake2p` の向きにだけ依存する。fastapi は `api`、Crypto は `deco.crypto`、requests は `deco.client` だけが直接 import できる (TMP の TLS は stdlib の ssl)。`api`・`deco` の直下にモジュールを足したら、`exhaustive = true` の契約の `layers` にも足す。
+- 層の依存は `pyproject.toml` の `[tool.importlinter]` が検査する。`deco` は `api`・`main`・`settings` に依存しない。`api` は `routes` → `models` / `service`、`deco` は `client` / `tmp` → `crypto` / `exceptions` / `catalog` / `spake2p` の向きにだけ依存する。fastapi は `api`、Crypto は `deco.crypto`・`deco.spake2p`、requests は `deco.client` だけが直接 import できる (TMP の TLS は stdlib の ssl)。`api`・`deco` の直下にモジュールを足したら、`exhaustive = true` の契約の `layers` にも足す。
 
 ## 規約
 

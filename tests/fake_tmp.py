@@ -430,7 +430,7 @@ class FakeTmp:
             self._auth_attempts += 1
         username_ok = params.get("username") == sha256(self.email.encode()).hexdigest()
         session = verifier.share_response(
-            user_random=register["params"]["user_random"],
+            user_random=b64decode(params["user_random"]),
             user_share=b64decode(share["user_share"]),
             user_confirm=b64decode(share["user_confirm"]),
         )

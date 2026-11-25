@@ -1,4 +1,8 @@
-"""Deco ローカル API の暗号化。本文は AES-128-CBC、署名とパスワードは RSA (PKCS#1 v1.5)。"""
+"""
+Deco ローカル API の暗号化。
+
+luci の本文は AES-128-CBC、署名とパスワードは RSA (PKCS#1 v1.5)。TMP (TPAP) の data packet は AES-128-CCM。
+"""
 
 import struct
 from base64 import b64decode, b64encode
@@ -58,8 +62,8 @@ class SessionCipher:
         return unpad(cipher.decrypt(b64decode(data)), AES.block_size).decode()
 
 
-# TMP (TPAP) の data packet を守る tag の長さ。
-_TMP_TAG_SIZE = 16
+# TMP (TPAP) の data packet の暗号文に続く、AES-128-CCM の tag の長さ。
+TMP_TAG_SIZE = 16
 
 
 class TmpSessionCipher:
@@ -75,12 +79,12 @@ class TmpSessionCipher:
         self._nonce_base = nonce_base
 
     def _nonce(self, seq: int) -> bytes:
-        return self._nonce_base + struct.pack("<I", seq & 0xFFFFFFFF)
+        return self._nonce_base + struct.pack("<I", seq)
 
     def encrypt(self, plaintext: bytes, *, seq: int) -> bytes:
         """暗号文に 16 byte の tag をつないで返す。"""
         cipher = AES.new(
-            self._key, AES.MODE_CCM, nonce=self._nonce(seq), mac_len=_TMP_TAG_SIZE
+            self._key, AES.MODE_CCM, nonce=self._nonce(seq), mac_len=TMP_TAG_SIZE
         )
         return cipher.encrypt(plaintext) + cipher.digest()
 
@@ -91,9 +95,9 @@ class TmpSessionCipher:
         Raises:
             ValueError: tag が合わない、またはデータが tag より短い。
         """
-        if len(data) < _TMP_TAG_SIZE:
+        if len(data) < TMP_TAG_SIZE:
             raise ValueError("TMP data packet is shorter than its authentication tag")
         cipher = AES.new(
-            self._key, AES.MODE_CCM, nonce=self._nonce(seq), mac_len=_TMP_TAG_SIZE
+            self._key, AES.MODE_CCM, nonce=self._nonce(seq), mac_len=TMP_TAG_SIZE
         )
-        return cipher.decrypt_and_verify(data[:-_TMP_TAG_SIZE], data[-_TMP_TAG_SIZE:])
+        return cipher.decrypt_and_verify(data[:-TMP_TAG_SIZE], data[-TMP_TAG_SIZE:])
