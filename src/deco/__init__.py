@@ -6,7 +6,6 @@ from deco.exceptions import (
     DecoAuthError,
     DecoConnectionError,
     DecoError,
-    DecoHostKeyError,
     DecoRequestTooLargeError,
 )
 from deco.tmp import TmpClient, TmpCredentials
@@ -18,7 +17,6 @@ __all__ = [
     "DecoClient",
     "DecoConnectionError",
     "DecoError",
-    "DecoHostKeyError",
     "DecoRequestTooLargeError",
     "LuciOperation",
     "TmpClient",

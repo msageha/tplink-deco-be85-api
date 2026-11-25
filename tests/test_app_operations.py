@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import paramiko
 import pytest
 from hypothesis import example, given, strategies as st
 
@@ -276,35 +275,6 @@ def test_app_login_rejected_is_401_and_not_retried_until_restart(
         assert app.calls == []
 
 
-def test_app_router_with_untrusted_host_key_gets_no_password_and_is_502(
-    stack: Stack,
-) -> None:
-    """host key が信頼した鍵と違う接続先には、認証 (パスワードの送信) をせずに失敗する。"""
-    stack.reset_logged_out()
-    stack.app.rsa_key = paramiko.RSAKey.generate(2048)
-
-    response = stack.api.post("/api/app/device/led/read", json={})
-
-    assert response.status_code == 502
-    assert "TMP_HOST_KEY" in response.json()["detail"]
-    assert stack.app.auth_attempts == 0
-    assert stack.app.calls == []
-
-
-def test_app_router_not_offering_the_trusted_key_type_gets_no_password_and_is_502(
-    stack: Stack,
-) -> None:
-    """信頼した種類の host key をルーターが提示しなければ、ほかの鍵で妥協せず、認証もしない。"""
-    stack.reset_logged_out()
-    stack.app.rsa_key = None
-
-    response = stack.api.post("/api/app/device/led/read", json={})
-
-    assert response.status_code == 502
-    assert "TMP_HOST_KEY" in response.json()["detail"]
-    assert stack.app.auth_attempts == 0
-
-
 def test_app_unreachable_router_is_504(stack: Stack) -> None:
     stack.reset_logged_out()
     stack.app.reachable = False
@@ -402,8 +372,9 @@ def test_app_login_interrupted_by_router_is_504_not_401(stack: Stack) -> None:
     assert response.status_code == 504
 
 
-# 1 つの TMP packet に載る要求の本文の上限 (payload 長 16 bit から business header の 20 byte を引いた長さ)。
-_MAX_REQUEST_BODY = 0xFFFF - 20
+# 1 つの要求に載る本文の上限。TMP packet を暗号化 + 16 byte tag した TSCP payload が tpapsvr の
+# 上限 (0x10010) に収まる必要があり、TSCP tag 16・TMP header 16・business header 20 を引いた長さ。
+_MAX_REQUEST_BODY = 0x10010 - 16 - 16 - 20
 
 
 def _params_with_body_size(size: int) -> dict[str, Any]:

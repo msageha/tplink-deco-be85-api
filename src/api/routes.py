@@ -68,7 +68,12 @@ async def health(*, service: Service, tmp: TmpService) -> dict[str, Any]:
         "status": "ok",
         "host": service.client.host,
         "logged_in": service.client.logged_in,
-        "tmp_connected": tmp.client.connected,
+        # TMP の要求の実行中は、その完了 (最長 TIMEOUT 秒) を待たずにセッションの有無だけを返す。
+        "tmp_connected": (
+            tmp.client.connected
+            if tmp.busy
+            else await tmp.run(tmp.client.check_connected)
+        ),
     }
 
 

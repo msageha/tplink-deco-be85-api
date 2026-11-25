@@ -13,7 +13,6 @@ dependencies = [
   "pydantic-settings>=2.14.2",
   "requests>=2.31",
   "pycryptodome>=3.20",
-  "paramiko>=5.1",
 ]
 
 [dependency-groups]
@@ -28,7 +27,8 @@ dev = [
   "watchfiles>=1.3.0",
   "hypothesis>=6.170.15",
   "pytest-xdist>=3.8.0",
-  "types-paramiko>=5.1.0.20261030",
+  # fake の Deco (TMP) が TLS を終端するための自己署名証明書を test 実行時に作る。
+  "cryptography>=46.0.3",
 ]
 
 [tool.uv]
@@ -133,7 +133,7 @@ ban-relative-imports = "all"
 # src 直下の main.py と settings.py は package ではないので root にできない。
 # deco から 2 つへの依存は、root の外のモジュールとして forbidden 契約で検査する。
 root_packages = ["api", "deco"]
-# 外部パッケージ (fastapi・Crypto・requests・paramiko) の直接の import も、protected 契約で検査する。
+# 外部パッケージ (fastapi・Crypto・requests) の直接の import も、protected 契約で検査する。
 # protected 契約は graph に現れるパッケージだけを指定できるので、どこからも直接 import されていない starlette は指定できない。
 include_external_packages = true
 
@@ -162,12 +162,12 @@ layers = [
 exhaustive = true
 
 [[tool.importlinter.contracts]]
-name = "deco の層は client・tmp から crypto・exceptions・catalog へ一方向に依存する"
+name = "deco の層は client・tmp から crypto・exceptions・catalog・spake2p へ一方向に依存する"
 type = "layers"
 containers = ["deco"]
 layers = [
   "client | tmp",
-  "crypto | exceptions | catalog",
+  "crypto | exceptions | catalog | spake2p",
 ]
 exhaustive = true
 
@@ -178,22 +178,16 @@ protected_modules = ["fastapi"]
 allowed_importers = ["api"]
 
 [[tool.importlinter.contracts]]
-name = "暗号ライブラリを直接 import するのは deco.crypto だけ"
+name = "暗号ライブラリを直接 import するのは deco.crypto と deco.spake2p だけ"
 type = "protected"
 protected_modules = ["Crypto"]
-allowed_importers = ["deco.crypto"]
+allowed_importers = ["deco.crypto", "deco.spake2p"]
 
 [[tool.importlinter.contracts]]
 name = "HTTP client を直接 import するのは deco.client だけ"
 type = "protected"
 protected_modules = ["requests"]
 allowed_importers = ["deco.client"]
-
-[[tool.importlinter.contracts]]
-name = "SSH client を直接 import するのは deco.tmp だけ"
-type = "protected"
-protected_modules = ["paramiko"]
-allowed_importers = ["deco.tmp"]
 
 [tool.ty.environment]
 root = ["./src", "."]

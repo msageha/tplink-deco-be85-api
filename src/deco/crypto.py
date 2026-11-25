@@ -1,5 +1,10 @@
-"""Deco ローカル API の暗号化。本文は AES-128-CBC、署名とパスワードは RSA (PKCS#1 v1.5)。"""
+"""
+Deco ローカル API の暗号化。
 
+luci の本文は AES-128-CBC、署名とパスワードは RSA (PKCS#1 v1.5)。TMP (TPAP) の data packet は AES-128-CCM。
+"""
+
+import struct
 from base64 import b64decode, b64encode
 
 from Crypto.Cipher import AES, PKCS1_v1_5
@@ -55,3 +60,44 @@ class SessionCipher:
     def decrypt(self, data: str) -> str:
         cipher = AES.new(self._key, AES.MODE_CBC, self._iv)
         return unpad(cipher.decrypt(b64decode(data)), AES.block_size).decode()
+
+
+# TMP (TPAP) の data packet の暗号文に続く、AES-128-CCM の tag の長さ。
+TMP_TAG_SIZE = 16
+
+
+class TmpSessionCipher:
+    """
+    TPAP の SPAKE2+ で得た鍵で、TMP の data packet を AES-128-CCM で暗号化・復号する。
+
+    packet ごとの nonce は、鍵導出で得た 8 byte に packet の seq (little-endian uint32) を
+    つないだ 12 byte。送信・応答とも、その packet の seq から nonce を作る。
+    """
+
+    def __init__(self, key: bytes, *, nonce_base: bytes) -> None:
+        self._key = key
+        self._nonce_base = nonce_base
+
+    def _nonce(self, seq: int) -> bytes:
+        return self._nonce_base + struct.pack("<I", seq)
+
+    def encrypt(self, plaintext: bytes, *, seq: int) -> bytes:
+        """暗号文に 16 byte の tag をつないで返す。"""
+        cipher = AES.new(
+            self._key, AES.MODE_CCM, nonce=self._nonce(seq), mac_len=TMP_TAG_SIZE
+        )
+        return cipher.encrypt(plaintext) + cipher.digest()
+
+    def decrypt(self, data: bytes, *, seq: int) -> bytes:
+        """
+        暗号文 + 16 byte の tag を復号する。
+
+        Raises:
+            ValueError: tag が合わない、またはデータが tag より短い。
+        """
+        if len(data) < TMP_TAG_SIZE:
+            raise ValueError("TMP data packet is shorter than its authentication tag")
+        cipher = AES.new(
+            self._key, AES.MODE_CCM, nonce=self._nonce(seq), mac_len=TMP_TAG_SIZE
+        )
+        return cipher.decrypt_and_verify(data[:-TMP_TAG_SIZE], data[-TMP_TAG_SIZE:])

@@ -37,7 +37,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             credentials=TmpCredentials(
                 email=settings.tplink_email, password=settings.password
             ),
-            host_key=settings.tmp_host_key,
             port=settings.tmp_port,
             timeout=settings.timeout,
         )
