@@ -68,7 +68,8 @@ async def health(*, service: Service, tmp: TmpService) -> dict[str, Any]:
         "status": "ok",
         "host": service.client.host,
         "logged_in": service.client.logged_in,
-        "tmp_connected": tmp.client.connected,
+        # TMP は、閉じられたセッションをソケットで見分けるため DecoService の worker thread で確かめる。
+        "tmp_connected": await tmp.run(tmp.client.check_connected),
     }
 
 

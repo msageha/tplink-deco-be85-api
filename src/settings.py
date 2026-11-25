@@ -23,21 +23,13 @@ class Settings(BaseSettings):
     timeout: int = Field(
         default=30, description="ルーターへの HTTP・TMP のタイムアウト (秒)"
     )
-    tmp_host_key: str = Field(
-        pattern=r"^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,2}$",
-        description=(
-            "信頼する Deco の TMP (SSH) の ECDSA の host key。`known_hosts` と同じ `<鍵の種類> <base64>` の形で、"
-            "`ssh-keyscan -p 20001 -t ecdsa <Deco のアドレス>` の出力から取る。一致しない接続先には"
-            "パスワードを送らない"
-        ),
-    )
     tmp_port: int = Field(
-        default=20001,
+        default=30001,
         ge=1,
         le=65535,
-        description="Deco の TMP (SSH) の port。port forward などで別の port から届くときに変える",
+        description="Deco の TMP (TPAP) の TLS の port。port forward などで別の port から届くときに変える",
     )
 
 
-# 必須の password・deco_host・tplink_email・tmp_host_key は環境変数から読む。pyright は pydantic-settings の読み込みを知らず、引数の不足と誤検知する。
+# 必須の password・deco_host・tplink_email は環境変数から読む。pyright は pydantic-settings の読み込みを知らず、引数の不足と誤検知する。
 settings = Settings()  # pyright: ignore[reportCallIssue]

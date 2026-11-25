@@ -1,36 +1,52 @@
 """
 Deco アプリが使う TMP (Tether Management Protocol) のクライアント。
 
-Deco の dropbear (SSH) に TP-Link ID で認証し、direct-tcpip のチャネルでルーター内の TMP の
-デーモン (127.0.0.1:20002) につなぐ。チャネルの上では、TMP の packet (16 byte の header +
-payload) に business の header (20 byte) と JSON の本文を載せて、opcode ごとに要求と応答を
-やりとりする。数値はすべて big-endian。
+FW 1.3.0 の Deco は SSH (dropbear) を閉じ、Deco アプリは tpapsvr (TPAP) 経由で TMP を話す。
+クライアントは Deco の TLS (port 30001) につなぎ、TP-Link ID で SPAKE2+ 認証したあと、同じ TLS
+接続上の "TMP" チャネルに、ルーター内の TMP のデーモン (127.0.0.1:20002) 宛ての packet を載せる。
+
+3 つの層からなる。
+- TSCP: 24 byte の header を持つ外側の packet。auth は平文 JSON、data はセッション鍵で AES-128-CCM
+  暗号化した本文を運ぶ。数値は length / checksum が big-endian、seq が little-endian。
+- TMP: data の本文に入る 16 byte の header + payload。tpapsvr が tmpsvr へそのまま中継する。
+- business: TMP の payload に入る 20 byte の header + JSON。opcode ごとに要求と応答をやりとりする。
+TMP と business の framing は SSH の経路と同じで、数値はすべて big-endian。
 """
 
+import contextlib
 import json
 import socket
+import ssl
 import struct
 import threading
 import time
 import zlib
 from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
-from hashlib import sha1
+from secrets import randbits, token_bytes
 from typing import Any, NamedTuple, cast
 from urllib.parse import urlsplit
 
-import paramiko
-from paramiko.ssh_exception import IncompatiblePeer
-
+from deco.crypto import TmpSessionCipher
 from deco.exceptions import (
     DecoAuthError,
     DecoConnectionError,
     DecoError,
-    DecoHostKeyError,
     DecoRequestTooLargeError,
 )
+from deco.spake2p import Spake2pProver, build_credential, sha256_hex
 
-_DAEMON_ADDRESS = ("127.0.0.1", 20002)
+# TSCP の header: version 1・flags 0x01、type、予約、payload 長 (BE)、チャネル名 8 byte、
+# seq (LE)、checksum (BE CRC32)。length と checksum は big-endian、seq は little-endian。
+_TSCP_HEADER_SIZE = 24
+_TSCP_TYPE_AUTH = 1
+_TSCP_TYPE_DATA = 2
+_TSCP_CHANNEL_TMP = b"TMP\x00\x00\x00\x00\x00"
+# checksum の欄にこの値を big-endian で入れた packet 全体から CRC32 を計算する。
+_TSCP_CRC_MAGIC = 0x92BF30ED
+# tpapsvr が受け付ける payload の上限 (session_read_packet)。壊れた長さでメモリを使い切らない。
+_MAX_TSCP_PAYLOAD = 0x10010
+
 # TMP の packet の header: version 1・1、type、予約、payload 長、予約 2 byte、seq、CRC32。
 _TMP_HEADER = struct.Struct(">BBBBHBBII")
 # payload 長は 16 bit なので、1 つの packet に載る business header と本文はこの長さまで。
@@ -43,8 +59,20 @@ _TMP_TYPE_ACK = 2
 _TMP_TYPE_DATA = 5
 # CRC32 は、この値を CRC の欄に入れた packet 全体から計算する。
 _CRC_PLACEHOLDER = 0x5A6B7C8D
+_TMP_KEEPALIVE = bytes([1, 1, _TMP_TYPE_KEEPALIVE, 0])
+# TMP packet の種類を読むのに要る最小の長さ (version・flags・type・予約)。
+_TMP_PEEK = 4
 # business の header: version 1・2、opcode、ptype、err、txid、本文全体の CRC32、全体長、offset。
 _BUSINESS_HEADER = struct.Struct(">BBHBBHIII")
+# AES-128-CCM の tag 長 (TSCP の data packet の暗号文に続く)。
+_TMP_TAG_SIZE = 16
+# 1 つの要求に載せられる本文の上限。business header と本文は TMP packet (16 byte header) の 16 bit の
+# payload 長に収まり、さらにそれを暗号化して tag を付けた TSCP の payload が _MAX_TSCP_PAYLOAD に
+# 収まる必要がある。両方の制約の厳しい方で頭打ちにする。
+_MAX_BODY = min(
+    _MAX_PAYLOAD - _BUSINESS_HEADER.size,
+    _MAX_TSCP_PAYLOAD - _TMP_TAG_SIZE - _TMP_HEADER.size - _BUSINESS_HEADER.size,
+)
 _PTYPE_REQUEST = 2
 _PTYPE_PULL = 4
 _PTYPE_RESPONSE = 5
@@ -74,29 +102,26 @@ def _business_packet(
     return header + body
 
 
+def _tscp_packet(
+    payload: bytes, *, packet_type: int, channel: bytes, seq: int
+) -> bytes:
+    """TSCP の packet を組む。checksum は magic を仮置きした packet 全体の CRC32。"""
+    header = (
+        bytes([1, 1, packet_type, 0])
+        + struct.pack(">I", len(payload))
+        + channel
+        + struct.pack("<I", seq)
+        + struct.pack(">I", _TSCP_CRC_MAGIC)
+    )
+    crc = zlib.crc32(header + payload)
+    return header[:20] + struct.pack(">I", crc) + payload
+
+
 class TmpCredentials(NamedTuple):
-    """TMP の SSH 認証に使う、Deco のオーナーの TP-Link ID。"""
+    """TMP の SPAKE2+ 認証に使う、Deco のオーナーの TP-Link ID。"""
 
     email: str
     password: str
-
-
-def _parse_host_key(host_key: str) -> paramiko.PKey:
-    """
-    `<鍵の種類> <base64>` の形の公開鍵を読む。
-
-    Raises:
-        ValueError: 公開鍵として読めない。
-    """
-    key_type, _, encoded = host_key.strip().partition(" ")
-    try:
-        return paramiko.PKey.from_type_string(
-            key_type, b64decode(encoded, validate=True)
-        )
-    except (Base64Error, paramiko.SSHException, ValueError) as err:
-        raise ValueError(
-            f"TMP host key is not '<key type> <base64>' of a supported key: {err}"
-        ) from err
 
 
 class TmpClient:
@@ -107,48 +132,81 @@ class TmpClient:
         url: str,
         *,
         credentials: TmpCredentials,
-        host_key: str,
-        port: int = 20001,
+        port: int = 30001,
         timeout: int = 30,
     ) -> None:
         """
-        url は luci の Web API と同じ Deco の URL で、そのホストの port に SSH で接続する。
+        url は luci の Web API と同じ Deco の URL で、そのホストの port に TLS で接続する。
 
-        SSH の username は TP-Link ID の email の SHA-1 (hex) で、dropbear がルーターに保存された
-        オーナーのアカウントと照合する。host_key は信頼する Deco の SSH の host key で、
-        `known_hosts` と同じ `<鍵の種類> <base64>` の形。
+        SPAKE2+ の username は TP-Link ID の email の SHA-256 (hex)。パスワードは TP-Link ID の
+        パスワードで、SPAKE2+ (PAKE) がルーターに保存されたオーナーの verifier と照合する。PAKE
+        なので、正しい verifier を持たない接続先はセッションを確立できず、パスワードは渡らない。
 
         Raises:
-            ValueError: url にホストが無い、または host_key を公開鍵として読めない。
+            ValueError: url にホストが無い。
         """
         hostname = urlsplit(url).hostname
         if not hostname:
             raise ValueError(f"Deco URL has no host: {url!r}")
         self.host = hostname
-        self._host_key = _parse_host_key(host_key)
         self._port = port
-        self._username = sha1(
-            credentials.email.encode(), usedforsecurity=False
-        ).hexdigest()
+        self._email = credentials.email
+        self._username = sha256_hex(credentials.email)
         self._password = credentials.password
         self._timeout = timeout
-        self._transport: paramiko.Transport | None = None
-        self._channel: paramiko.Channel | None = None
+        # ルーターが TLS 証明書を検証しないのと同じく、検証しない。SPAKE2+ が接続先を認証する。
+        self._tls = ssl.create_default_context()
+        self._tls.check_hostname = False
+        self._tls.verify_mode = ssl.CERT_NONE
+        self._socket: ssl.SSLSocket | None = None
+        self._cipher: TmpSessionCipher | None = None
+        self._tscp_seq = 0
         self._seq = 0
         self._txid = 0
         self._deadline = 0.0
         # ルーターが資格情報を拒否したら、設定を直して起動し直すまで認証を送らない。
-        # 誤った資格情報での再試行は、dropbear の失敗回数の上限を消費するため。
+        # 誤った資格情報での再試行は、ルーターの失敗回数の上限を消費するため。
         self._rejected = False
 
     @property
     def connected(self) -> bool:
-        return (
-            self._transport is not None
-            and self._transport.is_active()
-            and self._channel is not None
-            and not self._channel.closed
-        )
+        """セッションがあるか (ソケットに触れない field だけの判定)。"""
+        return self._socket is not None and self._cipher is not None
+
+    def check_connected(self) -> bool:
+        """
+        生きたセッションがあるかを確かめ、相手に閉じられていれば捨てる。
+
+        ソケットを読むので、要求を直列化する lock を持つ worker thread からだけ呼ぶ (health も
+        DecoService 経由でこの thread で呼ぶ)。ルーターへは何も送らない。
+        """
+        if self.connected and self._session_lost():
+            self.close()
+        return self.connected
+
+    def _session_lost(self) -> bool:
+        """
+        張ってあるセッションが相手に閉じられていないかを、ソケットに書かずに確かめる。
+
+        要求の合間は data が来ないので、non-blocking な recv が EOF (閉じられた) か想定外の data を
+        返したら作り直す。
+        """
+        sock = self._socket
+        if sock is None:
+            return True
+        sock.setblocking(False)  # noqa: FBT003 - socket API の引数
+        try:
+            sock.recv(1)
+        except ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError:
+            return False
+        except OSError, ssl.SSLError:
+            return True
+        else:
+            # 要求の合間に読めるものがあるのは、EOF (閉じられた) か想定外の data。どちらも作り直す。
+            return True
+        finally:
+            with contextlib.suppress(OSError):
+                sock.setblocking(True)  # noqa: FBT003 - socket API の引数
 
     def _connect(self) -> None:
         if self._rejected:
@@ -157,94 +215,155 @@ class TmpClient:
             )
         self.close()
         try:
-            sock = self._open_socket()
+            raw = self._open_socket()
         except OSError as err:
             raise DecoConnectionError(
                 f"Cannot reach Deco TMP at {self.host}:{self._port}: {err}"
             ) from err
-        transport = paramiko.Transport(sock)
-        self._transport = transport
         try:
-            remaining = self._remaining()
-            transport.banner_timeout = remaining
-            transport.handshake_timeout = remaining
-            transport.auth_timeout = remaining
-            self._verify_host_key(transport)
-            transport.auth_password(self._username, self._password)
-            channel = transport.open_channel(
-                "direct-tcpip",
-                dest_addr=_DAEMON_ADDRESS,
-                src_addr=sock.getsockname()[:2],
-                timeout=self._remaining(),
-            )
-        except DecoHostKeyError:
-            self.close()
-            raise
-        except paramiko.AuthenticationException as err:
-            # paramiko は認証中のタイムアウトや切断も AuthenticationException で投げるので、
-            # 接続が続いたままルーターが認証の結果を返したときだけ資格情報の不一致として扱う
-            # (切断でも auth_event は set される)。
-            handler = transport.auth_handler
-            answered = (
-                transport.is_active()
-                and handler is not None
-                and handler.auth_event is not None
-                and handler.auth_event.is_set()
-            )
-            self.close()
-            if answered:
-                self._rejected = True
-                raise DecoAuthError(
-                    "TMP login failed (check TPLINK_EMAIL and PASSWORD)"
-                ) from err
+            # TCP の接続に時間がかかった後でも、TLS handshake を期限の残り時間で打ち切る。
+            # handshake 完了まで self._socket が未設定で watchdog が効かないため。
+            raw.settimeout(self._remaining())
+            sock = self._tls.wrap_socket(raw, server_hostname=self.host)
+        except (OSError, ssl.SSLError) as err:
+            raw.close()
             raise DecoConnectionError(
-                f"TMP login to {self.host}:{self._port} did not complete: {err}"
+                f"Cannot establish TLS to Deco TMP at {self.host}:{self._port}: {err}"
             ) from err
-        except (paramiko.SSHException, OSError, EOFError) as err:
-            self.close()
-            raise DecoConnectionError(
-                f"Cannot open TMP session at {self.host}:{self._port}: "
-                f"{type(err).__name__}: {err}"
-            ) from err
-        self._channel = channel
+        self._socket = sock
+        self._tscp_seq = randbits(32)
         self._seq = 0
         self._txid = 0
+        self._cipher = self._authenticate()
         self._exchange(_OPCODE_ALLOC, body=b"")
 
-    def _verify_host_key(self, transport: paramiko.Transport) -> None:
+    def _authenticate(self) -> TmpSessionCipher:
         """
-        鍵交換を済ませ、ルーターの host key が信頼した鍵と一致することを確かめる。
+        SPAKE2+ でセッション鍵を確立する。
 
-        パスワードを送る前に照合するので、一致しなければ資格情報は接続先に渡らない。Deco は種類の
-        違う host key を複数持つので、信頼した鍵の種類だけを鍵交換で提示させる。
+        pake_register の username は email の SHA-256 (hex) で、device はこれで tpap_authmgmt の
+        オーナーのアカウントを引く。SPAKE2+ の credential は `<email>/<password>` で、device は
+        登録時に同じ文字列から verifier を作って保存する (BE85 FW 1.3.0 の accountmgnt.lua)。
 
         Raises:
-            DecoHostKeyError: host key が一致しない。
+            DecoAuthError: 認証できない (起動し直すまで接続しない)。
+            DecoConnectionError: 接続が途中で切れた、または応答が不正。
         """
-        name = self._host_key.get_name()
-        options = transport.get_security_options()
-        # RSA の鍵は、鍵の種類 (ssh-rsa) と鍵交換の署名の方式 (rsa-sha2-512 等) の名前が違う。
-        options.key_types = [
-            key_type
-            for key_type in options.key_types
-            if key_type == name
-            or (name == "ssh-rsa" and key_type.startswith("rsa-sha2-"))
-        ]
         try:
-            transport.start_client(timeout=self._remaining())
-        except IncompatiblePeer as err:
-            # Deco の dropbear は RSA の鍵を SHA-1 の署名 (ssh-rsa) でしか提示せず、paramiko は
-            # それを受け付けないので、RSA の鍵を信頼しても鍵交換ができない。
-            raise DecoHostKeyError(
-                f"Deco at {self.host}:{self._port} offers no usable {name} host key; "
-                "set TMP_HOST_KEY to its ECDSA key (ssh-keyscan -p 20001 -t ecdsa <host>)"
-            ) from err
-        presented = transport.get_remote_server_key()
-        if presented != self._host_key:
-            raise DecoHostKeyError(
-                f"Deco at {self.host}:{self._port} presented host key "
-                f"{presented.get_name()} {presented.fingerprint}, which does not match TMP_HOST_KEY"
+            return self._spake2p_login()
+        except DecoAuthError:
+            self._rejected = True
+            raise
+
+    def _spake2p_login(self) -> TmpSessionCipher:
+        """
+        pake_register → pake_share でセッション鍵を導く。
+
+        Raises:
+            DecoAuthError: credential が合わない (応答の dev_confirm が一致しない等)。
+            DecoConnectionError: 接続が途中で切れた、または応答が不正。
+        """
+        user_random = b64encode(token_bytes(32)).decode()
+        register = self._auth_round(
+            {
+                "sub_method": "pake_register",
+                "username": self._username,
+                "user_random": user_random,
+                "cipher_suites": [1],
+                "encryption": ["aes_128_ccm"],
+                "passcode_type": "userpw",
+            }
+        )
+        result = self._auth_result(register)
+        credential = build_credential(email=self._email, password=self._password)
+        try:
+            prover = Spake2pProver(
+                result,
+                user_random=user_random,
+                credential=credential,
+                random_scalar=randbits(256),
             )
+        except (
+            KeyError,
+            ValueError,
+            TypeError,
+            IndexError,
+            OverflowError,
+            Base64Error,
+        ) as err:
+            raise DecoConnectionError(
+                f"Deco sent an unusable pake_register response: {err}"
+            ) from err
+        share = self._auth_round(
+            {
+                "sub_method": "pake_share",
+                "user_share": b64encode(prover.user_share).decode(),
+                "user_confirm": b64encode(prover.user_confirm).decode(),
+            }
+        )
+        shared = self._auth_result(share)
+        try:
+            dev_confirm = b64decode(cast("str", shared["dev_confirm"]), validate=True)
+        except (KeyError, TypeError, Base64Error) as err:
+            raise DecoConnectionError(
+                f"Deco sent an unusable pake_share response: {err}"
+            ) from err
+        if not prover.device_confirm_ok(dev_confirm):
+            # verifier が一致しない。偽の接続先か、passcode が合わない。
+            raise DecoAuthError("TMP login failed: device confirmation did not match")
+        key, nonce_base = prover.session_key_and_nonce()
+        return TmpSessionCipher(key, nonce_base=nonce_base)
+
+    def _auth_round(self, params: dict[str, Any]) -> dict[str, Any]:
+        """
+        auth packet (平文 JSON) を 1 つ送り、応答の JSON を返す。
+
+        Raises:
+            DecoConnectionError: 認証の途中で接続が切れた (資格情報の不一致ではないので、拒否として
+                覚えない)。
+        """
+        request = {"method": "login", "params": params}
+        try:
+            self._send_tscp(
+                json.dumps(request).encode(),
+                packet_type=_TSCP_TYPE_AUTH,
+                channel=bytes(8),
+            )
+            payload = self._receive_tscp(_TSCP_TYPE_AUTH)
+        except (OSError, EOFError, ssl.SSLError) as err:
+            raise DecoConnectionError(
+                f"TMP login to {self.host}:{self._port} did not complete: "
+                f"{type(err).__name__}: {err}"
+            ) from err
+        try:
+            response: Any = json.loads(payload)
+        except ValueError as err:
+            raise DecoConnectionError("Deco sent an invalid TMP auth response") from err
+        if not isinstance(response, dict):
+            raise DecoConnectionError("Deco sent an invalid TMP auth response")
+        return cast("dict[str, Any]", response)
+
+    @staticmethod
+    def _auth_result(response: dict[str, Any]) -> dict[str, Any]:
+        """
+        auth の応答から `result` を取り出す。
+
+        資格情報の拒否 (error_code が 0 でない) と、応答の形式の不正 (result が無い等) を分ける。
+        後者を拒否として扱うと、1 度の不正な応答で起動し直すまで全 TMP 操作が 401 になるため。
+
+        Raises:
+            DecoAuthError: ルーターが認証を拒否した (error_code が 0 でない)。
+            DecoConnectionError: 応答の形式が不正 (成功コードだが result が無い等)。
+        """
+        error_code = response.get("error_code")
+        if error_code not in (0, None):
+            raise DecoAuthError(f"TMP login was refused by Deco: {response}")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise DecoConnectionError(
+                f"Deco sent an invalid TMP auth response: {response}"
+            )
+        return cast("dict[str, Any]", result)
 
     def _open_socket(self) -> socket.socket:
         """
@@ -270,12 +389,12 @@ class TmpClient:
 
     def close(self) -> None:
         """セッションを閉じる。閉じた後の呼び出しは接続し直す。"""
-        transport = self._transport
-        self._channel, self._transport = None, None
-        # Channel.close は切断済みの相手への通知で例外になりうるので呼ばない。Transport.close は
-        # 通知を送らずにソケットを閉じ、チャネルもまとめて閉じる。
-        if transport is not None:
-            transport.close()
+        sock = self._socket
+        self._socket, self._cipher = None, None
+        if sock is not None:
+            # 切断済みの相手への TLS の close_notify で例外になりうるので、ソケットだけ閉じる。
+            with contextlib.suppress(OSError):
+                sock.close()
 
     def _remaining(self) -> float:
         """要求ごとの期限までの残り時間 (秒)。期限を過ぎていれば TimeoutError。"""
@@ -285,60 +404,109 @@ class TmpClient:
         return remaining
 
     def _abort(self) -> None:
-        """期限に、別の thread から transport を閉じてブロック中の I/O を解く。"""
-        transport = self._transport
-        if transport is not None:
-            transport.close()
+        """期限に、別の thread からソケットを閉じてブロック中の I/O を解く。"""
+        sock = self._socket
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.close()
 
-    def _channel_until_deadline(self) -> paramiko.Channel:
-        """
-        要求ごとの期限までの残り時間を timeout に設定したチャネル。
-
-        keep-alive や通知が届き続けても、送受信の待ちを要求の期限で打ち切るため、読み書きのたびに呼ぶ。
-        """
-        channel = cast("paramiko.Channel", self._channel)
-        channel.settimeout(self._remaining())
-        return channel
+    def _socket_until_deadline(self) -> ssl.SSLSocket:
+        """読み書きの待ちを要求の期限で打ち切るため、読み書きのたびに timeout を設定し直す。"""
+        sock = cast("ssl.SSLSocket", self._socket)
+        sock.settimeout(self._remaining())
+        return sock
 
     def _send_all(self, data: bytes) -> None:
-        # Channel.sendall は部分送信ごとに同じ timeout で待つので、送信全体が期限を超えうる。
-        # 部分送信のたびに残り時間を設定し直す。
         while data:
-            sent = self._channel_until_deadline().send(data)
+            sent = self._socket_until_deadline().send(data)
             if sent == 0:
-                raise EOFError("TMP channel closed by Deco")
+                raise EOFError("TMP connection closed by Deco")
             data = data[sent:]
-
-    def _send(self, payload: bytes) -> None:
-        self._seq += 1
-        self._send_all(_tmp_packet(payload, seq=self._seq))
 
     def _receive_exact(self, size: int) -> bytes:
         buffer = b""
         while len(buffer) < size:
-            chunk = self._channel_until_deadline().recv(size - len(buffer))
+            chunk = self._socket_until_deadline().recv(size - len(buffer))
             if not chunk:
-                raise EOFError("TMP channel closed by Deco")
+                raise EOFError("TMP connection closed by Deco")
             buffer += chunk
         return buffer
 
+    def _send_tscp(self, payload: bytes, *, packet_type: int, channel: bytes) -> None:
+        """TSCP packet を 1 つ送る。data は本文をセッション鍵で暗号化する。"""
+        seq = self._tscp_seq
+        self._tscp_seq = (self._tscp_seq + 1) & 0xFFFFFFFF
+        if packet_type == _TSCP_TYPE_DATA:
+            payload = cast("TmpSessionCipher", self._cipher).encrypt(payload, seq=seq)
+        self._send_all(
+            _tscp_packet(payload, packet_type=packet_type, channel=channel, seq=seq)
+        )
+
+    def _receive_tscp(self, expected_type: int) -> bytes:
+        """
+        次の TSCP packet を読み、本文を返す。data は復号する。
+
+        Raises:
+            DecoError: packet の種類・version・checksum が合わない、または復号に失敗した。
+        """
+        header = self._receive_exact(_TSCP_HEADER_SIZE)
+        length = struct.unpack_from(">I", header, 4)[0]
+        seq = struct.unpack_from("<I", header, 16)[0]
+        checksum = struct.unpack_from(">I", header, 20)[0]
+        if header[0] != 1 or header[2] != expected_type:
+            raise DecoError(
+                f"Unexpected TMP packet (version {header[0]}, type {header[2]})"
+            )
+        if length > _MAX_TSCP_PAYLOAD:
+            raise DecoError(f"TMP packet from Deco is too long ({length} bytes)")
+        payload = self._receive_exact(length)
+        recomputed = zlib.crc32(
+            header[:20] + struct.pack(">I", _TSCP_CRC_MAGIC) + payload
+        )
+        if recomputed != checksum:
+            raise DecoError("Corrupt TMP packet from Deco")
+        if expected_type != _TSCP_TYPE_DATA:
+            return payload
+        try:
+            return cast("TmpSessionCipher", self._cipher).decrypt(payload, seq=seq)
+        except ValueError as err:
+            raise DecoError(f"Could not decrypt TMP packet from Deco: {err}") from err
+
+    def _send(self, payload: bytes) -> None:
+        """business packet を TMP packet に包み、data の TSCP packet で送る。"""
+        self._seq += 1
+        self._send_tscp(
+            _tmp_packet(payload, seq=self._seq),
+            packet_type=_TSCP_TYPE_DATA,
+            channel=_TSCP_CHANNEL_TMP,
+        )
+
     def _receive_payload(self) -> bytes:
-        """次の data packet の payload。keep-alive には応答し、接続の ACK は読み捨てる。"""
+        """次の business の payload。keep-alive には応答し、接続の ACK は読み捨てる。"""
         while True:
-            head = self._receive_exact(4)
-            packet_type = head[2]
+            packet = self._receive_tscp(_TSCP_TYPE_DATA)
+            if len(packet) < _TMP_PEEK:
+                raise DecoError("Truncated TMP packet from Deco")
+            packet_type = packet[2]
             if packet_type == _TMP_TYPE_KEEPALIVE:
-                self._send_all(bytes([1, 1, 4, 0]))
+                self._send_tscp(
+                    _TMP_KEEPALIVE,
+                    packet_type=_TSCP_TYPE_DATA,
+                    channel=_TSCP_CHANNEL_TMP,
+                )
                 continue
             if packet_type == _TMP_TYPE_ACK:
                 continue
             if packet_type != _TMP_TYPE_DATA:
                 raise DecoError(f"Unexpected TMP packet type {packet_type}")
-            header = head + self._receive_exact(_TMP_HEADER.size - 4)
-            *fields, crc = _TMP_HEADER.unpack(header)
-            payload = self._receive_exact(fields[4])
+            if len(packet) < _TMP_HEADER.size:
+                raise DecoError("Truncated TMP packet from Deco")
+            *fields, crc = _TMP_HEADER.unpack_from(packet)
+            header = packet[: _TMP_HEADER.size]
+            payload = packet[_TMP_HEADER.size :]
             if (
                 fields[:4] != [1, 1, _TMP_TYPE_DATA, 0]
+                or len(payload) != fields[4]
                 or _tmp_crc(header, payload=payload) != crc
             ):
                 raise DecoError("Corrupt TMP packet from Deco")
@@ -434,7 +602,7 @@ class TmpClient:
                 )
             )
             return self._receive_response(opcode=opcode, txid=txid)
-        except (OSError, EOFError, paramiko.SSHException) as err:
+        except (OSError, EOFError, ssl.SSLError) as err:
             # 要求が届いたか分からないので、セッションを捨てて呼び出し元に失敗を返す (再送はしない)。
             self.close()
             raise DecoConnectionError(
@@ -538,19 +706,19 @@ class TmpClient:
         if params is not None:
             request["params"] = params
         body = json.dumps(request).encode()
-        if _BUSINESS_HEADER.size + len(body) > _MAX_PAYLOAD:
+        if len(body) > _MAX_BODY:
             raise DecoRequestTooLargeError(
                 f"TMP request for opcode {opcode:#06x} is {len(body)} bytes; "
-                f"at most {_MAX_PAYLOAD - _BUSINESS_HEADER.size} bytes fit in one packet"
+                f"at most {_MAX_BODY} bytes fit in one packet"
             )
-        # 接続 (TCP・SSH の鍵交換と認証・チャネル・セッションの割り当て) から応答までを 1 つの期限で
-        # 打ち切る。チャネルの timeout は SSH の鍵交換の待ちなど transport の中の待機には効かないので、
-        # 期限に transport を閉じてブロック中の I/O も解く。
+        # 接続 (TCP・TLS・SPAKE2+ 認証・セッションの割り当て) から応答までを 1 つの期限で打ち切る。
+        # ソケットの timeout は TLS handshake の中の待機には効かないので、期限にソケットを閉じて
+        # ブロック中の I/O も解く。
         self._deadline = time.monotonic() + self._timeout
         watchdog = threading.Timer(self._timeout, self._abort)
         watchdog.start()
         try:
-            if not self.connected:
+            if not self.check_connected():
                 self._connect()
             body = self._exchange(opcode, body=body)
         finally:

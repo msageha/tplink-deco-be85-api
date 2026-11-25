@@ -26,7 +26,7 @@ mise install  # ツールをインストールし、uv sync と git hooks のセ
 Deco の管理パスワード (TP-Link ID のパスワード) と、Deco のオーナーの TP-Link ID の email は
 [fnox](https://fnox.jdx.dev/) で age 暗号化し、`fnox.toml` の `PASSWORD` と `TPLINK_EMAIL` に保存しています。
 `mise run dev` / `mise run run-image` は `fnox exec` で復号した値を同名の環境変数としてアプリに渡し、
-復号できなければ起動しません。email は Deco アプリと同じ経路 (TMP、後述) の SSH の認証に使います。
+復号できなければ起動しません。email は Deco アプリと同じ経路 (TMP、後述) の SPAKE2+ 認証に使います。
 `fnox.toml` に `TPLINK_EMAIL` が無い checkout では、次の手順で登録するまで `mise run dev` / `mise run run-image` は
 起動しません。
 
@@ -59,19 +59,16 @@ mise exec -- fnox -c ./fnox.local.toml set PASSWORD --provider age
 mise exec -- fnox -c ./fnox.local.toml set TPLINK_EMAIL --provider age
 ```
 
-接続先の Deco の URL (`DECO_HOST`) と、Deco の TMP (SSH) の host key (`TMP_HOST_KEY`) は `mise.toml` の `[env]` で
-設定します。`TMP_HOST_KEY` は `known_hosts` と同じ `<鍵の種類> <base64>` の形で、Deco と同じ LAN から
-`ssh-keyscan -p 20001 -t ecdsa <Deco のアドレス>` を実行し、出力の 2 列目と 3 列目を使います。Deco は RSA の鍵も
-持ちますが、SHA-1 の署名 (`ssh-rsa`) でしか提示しないので使えません。API はこの鍵と一致しない接続先には TP-Link ID のパスワードを送りません。
-Deco の鍵が変わったときは、`/api/app/...` は 502 を返し、`detail` に提示された鍵の種類と fingerprint が出ます。
-その場合は鍵を取り直して登録し直してください。ほかの設定値にはアプリ側に既定値があり、変えるときだけ環境変数で渡します。
+接続先の Deco の URL (`DECO_HOST`) は `mise.toml` の `[env]` で設定します。TMP の認証は SPAKE2+ (PAKE) で、
+正しいパスワードの verifier を持たない接続先はセッションを確立できず、パスワードも渡らないので、SSH の経路で
+使っていた host key の pinning は要りません。ほかの設定値にはアプリ側に既定値があり、変えるときだけ環境変数で渡します。
 
 | 変数         | 既定値  | 説明                                       |
 | ------------ | ------- | ------------------------------------------ |
 | `ACCOUNT`    | `admin` | 署名 hash に使うローカル管理アカウント名   |
 | `VERIFY_SSL` | `false` | HTTPS 時に証明書を検証するか               |
 | `TIMEOUT`    | `30`    | ルーターへの HTTP・TMP のタイムアウト (秒) |
-| `TMP_PORT`   | `20001` | Deco の TMP (SSH) の port                  |
+| `TMP_PORT`   | `30001` | Deco の TMP (TPAP) の TLS の port          |
 
 ## 起動
 
@@ -83,7 +80,7 @@ mise run dev   # PASSWORD と TPLINK_EMAIL を fnox で復号し、uvicorn を -
 - ルーターへのログインは遅延 (最初の API 呼び出し時)。401/403 やログイン画面 (非 JSON)、暗号文の空な
   `{"data": ""}` (Deco の管理画面などほかのクライアントのログインでセッションが無効になったとき) が
   返ったら、自動で再ログインして 1 回だけ再送します。
-- TMP の SSH セッションも、TMP を使う最初の呼び出し (`/api/app/...` と Wi-Fi の書き込み) で張り、使い回します。
+- TMP の TLS セッションも、TMP を使う最初の呼び出し (`/api/app/...` と Wi-Fi の書き込み) で張り、使い回します。
   切れていたら次の呼び出しで張り直します。
 - luci と TMP のクライアントはセッション状態を持つため、それぞれのリクエストはサーバー側の lock で直列化されます。
 
@@ -106,8 +103,8 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
   `CMD-SHELL`、`command` の中のパイプや変数展開等) も動きません。compose の `healthcheck.test` は exec 形式で Python を呼びます
   (例: `["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]`)。
   中を調べるときは `docker run --rm --entrypoint python deco-be85-api:latest -c '<code>'` で起動します。
-- `PASSWORD`・`TPLINK_EMAIL`・`DECO_HOST`・`TMP_HOST_KEY` はイメージに含めず、実行時に環境変数で渡します。mise を
-  使わずに起動する場合 (docker compose 等) は、この 4 つを直接渡せば fnox は要りません。
+- `PASSWORD`・`TPLINK_EMAIL`・`DECO_HOST` はイメージに含めず、実行時に環境変数で渡します。mise を
+  使わずに起動する場合 (docker compose 等) は、この 3 つを直接渡せば fnox は要りません。
 
 ## エンドポイント
 
@@ -162,13 +159,13 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
 
 ### エラー
 
-| Status    | 意味                                                                                                                      |
-| --------- | ------------------------------------------------------------------------------------------------------------------------- |
-| 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等)                                                     |
-| 401       | ルーターへのログイン失敗 (`DecoAuthError`。TMP は email かパスワードの不一致)                                             |
-| 413       | `/api/app/...` の `params` や Wi-Fi の書き込みの設定が、TMP の 1 packet に収まらない                                      |
-| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)。TMP の host key が `TMP_HOST_KEY` と一致しないときも 502 |
-| 504       | ルーターに到達できない (`DecoConnectionError`)                                                                            |
+| Status    | 意味                                                                                 |
+| --------- | ------------------------------------------------------------------------------------ |
+| 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等)                |
+| 401       | ルーターへのログイン失敗 (`DecoAuthError`。TMP は email かパスワードの不一致)        |
+| 413       | `/api/app/...` の `params` や Wi-Fi の書き込みの設定が、TMP の 1 packet に収まらない |
+| 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)                      |
+| 504       | ルーターに到達できない (`DecoConnectionError`)                                       |
 
 422 の `detail` はどの項目がなぜ不正かを返し、送った値 (パスワード等) は含めません。
 
@@ -202,7 +199,7 @@ Wi-Fi の書き込み (`/api/wireless`・`/api/wireless/config`) は、Deco ア�
 (`wireless/wlan/write`、opcode `0x4008`) で行います。luci の `admin/wireless?form=wlan` の write は
 guest の書き込みを HTTP 500 で落とすので、`/api/luci/wireless/wlan/write` ではなく
 `/api/app/wireless/wlan/write` を使ってください。読み取り (`GET /api/wireless`) は luci の経路のままです。
-書き込みには TMP の設定 (`TPLINK_EMAIL`・`TMP_HOST_KEY`) が要り、失敗したときの status と、書き込みの直後や
+書き込みには TMP の設定 (`TPLINK_EMAIL`) が要り、失敗したときの status と、書き込みの直後や
 ルーターが接続を切った直後に 504 になりうることは、`/api/app/...` と同じです (後述)。
 
 ### Wi-Fi 詳細設定の変更 `/api/wireless/config`
@@ -575,39 +572,49 @@ sequenceDiagram
 
 ### Deco アプリの経路 (TMP)
 
-Deco アプリは luci の Web API ではなく、TMP (Tether Management Protocol) でルーターを操作します。
+Deco アプリは luci の Web API ではなく、TMP (Tether Management Protocol) でルーターを操作します。FW 1.3.0 で
+SSH (dropbear, port 20001) は閉じ、Deco アプリは TPAP (tpapsvr, port 30001) の TLS で認証するようになりました。
+この API もその経路を使います。3 つの層からなります。
 
-1. Deco の dropbear (SSH、port 20001) に password 認証で接続する。username は TP-Link ID の email の
-   SHA-1 (hex)、password は TP-Link ID のパスワードで、ルーターに保存されたオーナーのアカウントと照合される。
-2. `direct-tcpip` のチャネルで、ルーター内の TMP のデーモン (`127.0.0.1:20002`) につなぐ。
-3. チャネルの上で、TMP の packet (16 byte の header、CRC32) に business の header (20 byte、opcode・txid・
-   本文全体の CRC32・全体長・offset) と JSON の本文 (`{"config_version": <ミリ秒>, "params": {...}}`) を載せて送る。
-   最初に opcode `0x0001` でセッションを割り当てる。
-4. 応答は要求と同じ opcode・txid の business packet で返る。長い応答は分割され (実機では 8 KiB 程度ずつ)、
-   offset を付けた PULL で続きを取る。分割された断片も、business の CRC32 には本文全体のものが入る。途中に届く keep-alive には応答し、opcode か txid が違う packet (クライアントの接続イベントの
-   通知等。通知の txid はルーター側の番号で、要求と重なりうる) は読み捨てる。
-5. ルーター側では `tmpsvr` が opcode を `luci.controller.admin.mobile_app.<controller>` の form・operation に
-   変換して呼ぶ。応答は luci と同じ `{"error_code": 0, "result": ...}`。
+1. **TLS + SPAKE2+ (TPAP)**: Deco の 30001 に TLS で接続し、SPAKE2+ (P-256, RFC 9383) で認証する。pake_register の
+   username は TP-Link ID の email の SHA-256 (hex) で、ルーターはこれでオーナーのアカウントを引く。SPAKE2+ の
+   credential は `<email>/<password>` の文字列で、ルーターは登録時にこの文字列から verifier を作って保存する
+   (BE85 FW 1.3.0 の `accountmgnt.lua` を復元して確認)。PAKE なので、正しい credential の verifier を持たない接続先は
+   応答の `dev_confirm` を作れず、credential は渡らない。認証後、同じ TLS 接続上の "TMP" チャネルにセッション鍵
+   (AES-128-CCM) で暗号化した packet を載せる。tpapsvr がそれを復号してルーター内の TMP のデーモン
+   (`127.0.0.1:20002`) へ中継する。
+2. **TMP packet**: 16 byte の header (CRC32)。暗号化した本文の中身がこの packet で、最初に opcode `0x0001` で
+   セッションを割り当てる。途中に届く keep-alive には応答する。
+3. **business packet**: TMP packet の payload。20 byte の header (opcode・txid・本文全体の CRC32・全体長・offset) と
+   JSON の本文 (`{"config_version": <ミリ秒>, "params": {...}}`)。応答は要求と同じ opcode・txid で返り、長い応答は
+   分割され (実機では 8 KiB 程度ずつ)、offset を付けた PULL で続きを取る。分割された断片も、business の CRC32 には
+   本文全体のものが入る。opcode か txid が違う packet (クライアントの接続イベントの通知等。通知の txid はルーター側の
+   番号で、要求と重なりうる) は読み捨てる。ルーター側では `tmpsvr` が opcode を
+   `luci.controller.admin.mobile_app.<controller>` の form・operation に変換して呼び、応答は luci と同じ
+   `{"error_code": 0, "result": ...}`。
 
 ```mermaid
 sequenceDiagram
     participant C as TmpClient
-    participant D as Deco (dropbear :20001)
+    participant P as Deco (tpapsvr :30001, TLS)
     participant T as tmpsvr (127.0.0.1:20002)
-    C->>D: SSH password 認証 (user = SHA-1(email))
-    C->>D: direct-tcpip を開く
-    D->>T: チャネルを中継
-    C->>T: opcode 0x0001 (セッションの割り当て)
+    C->>P: TLS handshake
+    C->>P: pake_register (user = SHA-256(email))
+    P-->>C: dev_salt・dev_random・dev_share
+    C->>P: pake_share (user_share・user_confirm)
+    P-->>C: dev_confirm・stok (セッション鍵を確立)
+    C->>P: opcode 0x0001 (AES-128-CCM で暗号化)
+    P->>T: 復号して中継
     T-->>C: token
-    C->>T: opcode + JSON (txid n)
-    T-->>C: keep-alive・通知 (opcode か txid が違う)
-    T-->>C: 応答の先頭 (txid n, total, offset 0)
-    C->>T: PULL (txid n, offset)
-    T-->>C: 応答の続き
+    C->>P: opcode + JSON (txid n)
+    P-->>C: keep-alive・通知 (opcode か txid が違う)
+    P-->>C: 応答の先頭 (txid n, total, offset 0)
+    C->>P: PULL (txid n, offset)
+    P-->>C: 応答の続き
 ```
 
-TMP の通信は `src/deco/tmp.py` (`TmpClient`) にあります。鍵交換では `TMP_HOST_KEY` と同じ種類の host key だけを
-提示させ、一致を確かめてから password 認証に進みます。
+TMP の通信は `src/deco/tmp.py` (`TmpClient`)、SPAKE2+ は `src/deco/spake2p.py`、セッションの AES-128-CCM は
+`src/deco/crypto.py` (`TmpSessionCipher`) にあります。
 
 ### ファームウェアから復元した操作の一覧 (BE85 V2 / FW 1.3.0)
 
@@ -649,9 +656,10 @@ LED・`upnp`・QoS・HomeShield・Wi-Fi など。分割された応答を含む)
 ```
 src/
   deco/            Deco ローカル API クライアント (FastAPI 非依存・単体利用可)
-    crypto.py        AES / RSA 暗号化と署名 (SessionCipher)
+    crypto.py        luci の AES / RSA 暗号化と署名 (SessionCipher)、TMP の AES-128-CCM (TmpSessionCipher)
+    spake2p.py       TMP (TPAP) の SPAKE2+ 認証 (Spake2pProver) と credential の組み立て
     client.py        ログイン・再ログイン・エンドポイント呼び出し (DecoClient)
-    tmp.py           Deco アプリの経路 (SSH + TMP) の接続と opcode の呼び出し (TmpClient)
+    tmp.py           Deco アプリの経路 (TLS + TPAP + TMP) の接続と opcode の呼び出し (TmpClient)
     catalog.py       ファームウェアから復元した luci form と TMP opcode の一覧
     exceptions.py    DecoError / DecoAuthError / DecoConnectionError
   api/             FastAPI 層
@@ -665,7 +673,7 @@ tests/             e2e テスト (起動した API に、luci と TMP を模し�
 
 `deco/` はプロトコル層 (暗号化・ログイン・通信・base64 名の復号)、`api/` は Web 層という
 責務分離です。このうち、`deco/` から `api/`・`main.py`・`settings.py` への依存の禁止、`api/`・`deco/` の中の層の向き、
-外部ライブラリ (fastapi・Crypto・requests・paramiko) を直接 import できるモジュールは、import-linter が `mise run lint` で検査します。
+外部ライブラリ (fastapi・Crypto・requests) を直接 import できるモジュールは、import-linter が `mise run lint` で検査します。
 
 ```mermaid
 flowchart LR
@@ -678,6 +686,8 @@ flowchart LR
     routes --> catalog[deco/catalog.py]
     client --> crypto[deco/crypto.py]
     client --> exceptions[deco/exceptions.py]
+    tmp --> crypto
+    tmp --> spake2p[deco/spake2p.py]
     tmp --> exceptions
     main --> exceptions
 ```
@@ -709,6 +719,10 @@ Deco の公開されていないローカル API をリバースエンジニア�
   `device_mac` パラメータ等の機種固有の挙動を確認
 - [mthsg/pydeco-tmp](https://github.com/mthsg/pydeco-tmp) (MIT) — TMP の SSH 認証と framing の公開解析。
   opcode の一覧は BE85 のファームウェアから復元した
+- [freeKC/tapo-v4-protocol](https://github.com/freeKC/tapo-v4-protocol) (MIT) /
+  [JurajNyiri/pytapo](https://github.com/JurajNyiri/pytapo) (MIT) — TP-Link の TPAP (SPAKE2+) の公開解析。
+  M/N 点・transcript・鍵スケジュールを参考にし、BE85 FW 1.3.0 の `libtpap.so` と一致を確かめた。TLS + TSCP の
+  framing と `<email>/<password>` の credential 形式は BE85 のファームウェアから復元した
 
 ## ライセンス / License
 

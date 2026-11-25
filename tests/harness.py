@@ -508,17 +508,12 @@ class Stack:
 
     def drop_tmp_sessions(self) -> None:
         """
-        TMP のセッションをルーター側から切り、API サーバーが切断を認識するまで待つ。
+        TMP のセッションをルーター側から切る。
 
-        切断は API サーバーの SSH のスレッドが非同期に知るので、待たずに次の要求を送ると、
-        切れたセッションで送って 504 になりうる。
+        API サーバーは次の要求の直前に、張ってあるセッションが切れていないかをソケットを読んで
+        確かめ、切れていれば接続し直すので、ここで待つ必要はない。
         """
         self.app.drop_sessions()
-        deadline = time.monotonic() + 10
-        while self.api.get("/api/health").json()["tmp_connected"]:
-            if time.monotonic() > deadline:
-                raise RuntimeError("API server did not notice the dropped TMP session")
-            time.sleep(0.05)
 
 
 _STARTED_RE = re.compile(r"Uvicorn running on (http://\S+)")
@@ -532,8 +527,7 @@ def run_api(*, deco_host: str, tmp: FakeTmp, log_path: Path) -> Generator[Api]:
     実行環境の変数は coverage の計測に使うものだけを渡す。settings は名前の大小文字を区別せずに
     読むので、手元の `deco_host` などが残ると実機に接続しうるため。proxy・uvicorn の設定も
     同じ理由で渡さず、ACCOUNT / VERIFY_SSL / TIMEOUT はアプリの既定値で動かす。TMP は
-    実機と同じ 20001 番では待ち受けられないので、fake の port を TMP_PORT で、fake の host key を
-    TMP_HOST_KEY で渡す。
+    実機と同じ 30001 番では待ち受けられないので、fake の port を TMP_PORT で渡す。
     """
     env = {k: v for k, v in os.environ.items() if k.startswith("COVERAGE_")}
     env |= {
@@ -541,7 +535,6 @@ def run_api(*, deco_host: str, tmp: FakeTmp, log_path: Path) -> Generator[Api]:
         "TPLINK_EMAIL": ROUTER_EMAIL,
         "DECO_HOST": deco_host,
         "TMP_PORT": str(tmp.port),
-        "TMP_HOST_KEY": tmp.trusted_host_key,
     }
     command = [
         sys.executable,
