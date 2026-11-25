@@ -186,11 +186,49 @@ class _Request(BaseModel):
 
 
 class WlanBandToggle(_Request):
-    band: WifiBand = Field(description="対象バンド")
+    band: WifiBand | None = Field(
+        default=None,
+        description=(
+            "対象バンド。network が guest のときだけ省略でき、省略すると guest が別扱い"
+            " (BE85 の 6 GHz) でない band のゲストをまとめて切り替える"
+        ),
+    )
     network: WifiNetwork = Field(
         default=WifiNetwork.host, description="host (通常) / guest (ゲスト)"
     )
     enable: bool = Field(description="有効にするか")
+
+    @model_validator(mode="after")
+    def _require_band_for_host(self) -> Self:
+        if self.band is None and self.network is not WifiNetwork.guest:
+            raise ValueError("band is required unless network is guest")
+        return self
+
+
+class GuestBandwidthLimit(BaseModel):
+    """ゲスト Wi-Fi の帯域制限。指定したフィールドだけを書き込む。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enable: bool | None = Field(default=None, description="帯域を制限するか")
+    downstream_bandwidth: int | None = Field(
+        default=None,
+        ge=0,
+        description="下りの上限。`POST /api/app/wireless/wlan/read` の値と同じ単位",
+    )
+    upstream_bandwidth: int | None = Field(
+        default=None,
+        ge=0,
+        description="上りの上限。`POST /api/app/wireless/wlan/read` の値と同じ単位",
+    )
+
+    @model_validator(mode="after")
+    def _require_a_setting(self) -> Self:
+        if not self.model_dump(exclude_none=True):
+            raise ValueError(
+                "bandwidth_limit must include at least one field to update"
+            )
+        return self
 
 
 class WirelessSettings(BaseModel):
@@ -202,9 +240,43 @@ class WirelessSettings(BaseModel):
     ssid: str | None = Field(default=None, description="SSID (平文)")
     password: str | None = Field(default=None, description="パスワード (平文)")
     enable_hide_ssid: bool | None = Field(default=None, description="SSID を隠すか")
-    channel: int | None = Field(default=None, description="チャンネル")
-    channel_width: str | None = Field(default=None, description="チャンネル幅")
-    mode: str | None = Field(default=None, description="無線モード")
+    channel: int | None = Field(
+        default=None,
+        description=(
+            "チャンネル (0 は自動)。network によらず band 全体に効く。"
+            "`GET /api/wireless` の channel は、自動のときも実際に使っているチャンネルを返す"
+        ),
+    )
+    channel_width: str | None = Field(
+        default=None,
+        description="チャンネル幅 (例: HT80)。network によらず band 全体に効く",
+    )
+    mode: str | None = Field(
+        default=None,
+        description="無線モード (例: 11ac)。network によらず band 全体に効く",
+    )
+    encryption_mode: str | None = Field(
+        default=None, description="暗号化方式 (例: wpa2・wpa3・owe)"
+    )
+    enable_wpa3: bool | None = Field(default=None, description="WPA3 を使うか")
+    host_isolation: bool | None = Field(
+        default=None,
+        description="ゲストの端末から通常のネットワークの端末への通信を遮断するか (guest のみ)",
+    )
+    access_duration: int | None = Field(
+        default=None,
+        ge=-1,
+        description=(
+            "ゲスト Wi-Fi を有効にしておく期間。-1 は無期限、ほかの値は "
+            "`POST /api/app/wireless/wlan/read` の値と同じ単位 (guest のみ)"
+        ),
+    )
+    bandwidth_limit: GuestBandwidthLimit | None = Field(
+        default=None, description="帯域制限 (guest のみ)"
+    )
+
+
+_GUEST_ONLY_SETTINGS = {"host_isolation", "access_duration", "bandwidth_limit"}
 
 
 class WirelessConfigUpdate(_Request):
@@ -215,9 +287,13 @@ class WirelessConfigUpdate(_Request):
     settings: WirelessSettings = Field(description="変更するフィールド (1 つ以上)")
 
     @model_validator(mode="after")
-    def _require_a_setting(self) -> Self:
-        if not self.settings.model_dump(exclude_none=True):
+    def _validate_settings(self) -> Self:
+        given = self.settings.model_dump(exclude_none=True)
+        if not given:
             raise ValueError("settings must include at least one field to update")
+        guest_only = sorted(given.keys() & _GUEST_ONLY_SETTINGS)
+        if guest_only and self.network is not WifiNetwork.guest:
+            raise ValueError(f"{', '.join(guest_only)} can be set only for guest")
         return self
 
 

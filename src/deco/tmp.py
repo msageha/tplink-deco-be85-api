@@ -13,7 +13,7 @@ import struct
 import threading
 import time
 import zlib
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
 from hashlib import sha1
 from typing import Any, NamedTuple, cast
@@ -50,6 +50,10 @@ _PTYPE_PULL = 4
 _PTYPE_RESPONSE = 5
 # セッションの割り当て。本文なしで送り、応答の token は以後の要求に使わない。
 _OPCODE_ALLOC = 0x0001
+_OPCODE_WLAN_READ = 0x4009
+_OPCODE_WLAN_WRITE = 0x4008
+# 無線の設定のうち、band の radio (network によらず band で 1 つ) に属するものと、その TMP での名前。
+_RADIO_FIELDS = {"channel": "channel", "channel_width": "htmode", "mode": "hwmode"}
 
 
 def _tmp_crc(header: bytes, *, payload: bytes) -> int:
@@ -439,6 +443,83 @@ class TmpClient:
         except DecoError:
             self.close()
             raise
+
+    def set_wlan(self, *, band: str, network: str, settings: dict[str, Any]) -> Any:
+        """
+        band の 1 つの network (host / guest) の Wi-Fi 設定と、その band の radio の設定を書き込む。
+
+        luci の `admin/wireless?form=wlan` の write は guest の書き込みを HTTP 500 で落とすので、
+        Deco アプリと同じ TMP の経路で書く。settings の名前は luci の read の形 (`GET /api/wireless`)
+        に合わせ、TMP の形に置き換えて送る: ssid / password は平文を受け取って base64 にし、
+        channel / channel_width / mode は band の radio (channel / htmode / hwmode) に書く。
+        TMP が文字列で持つ数値 (channel・access_duration・bandwidth_limit の上限) は文字列にする。
+        """
+        params: dict[str, Any] = {}
+        network_settings: dict[str, Any] = {}
+        radio: dict[str, Any] = {}
+        for key, value in settings.items():
+            if key in _RADIO_FIELDS:
+                radio[_RADIO_FIELDS[key]] = str(value) if key == "channel" else value
+            elif key in ("ssid", "password"):
+                network_settings[key] = b64encode(value.encode()).decode()
+            elif key == "access_duration":
+                network_settings[key] = str(value)
+            elif key == "bandwidth_limit":
+                network_settings[key] = {
+                    k: v if k == "enable" else str(v) for k, v in value.items()
+                }
+            else:
+                network_settings[key] = value
+        if network_settings:
+            params[network] = network_settings
+        if radio:
+            params["radio"] = radio
+        return self.call(_OPCODE_WLAN_WRITE, params={band: params})
+
+    def set_guest_enable(self, *, enable: bool) -> list[str]:
+        """
+        guest が別扱い (`is_separate`) でない band のゲストを、1 回の write でまとめて切り替える。
+
+        `is_separate` が true の guest (BE85 の 6 GHz) は Deco アプリでも別に設定するゲストで、
+        未設定のままでもパスワードの無い OWE の設定を持ちうるので、ここでは切り替えない。
+        `is_separate` を持たない guest は別扱いでないとみなす (BE85 の 2.4 / 5 GHz は持たない)。
+        切り替えた band を返し、対象が無ければ書き込まずに空のリストを返す。
+
+        Raises:
+            DecoError: wlan の read の応答が不正。一部の band だけを切り替えて成功を返さないよう、
+                書き込む前に止める。
+        """
+        wlan = self.call(_OPCODE_WLAN_READ)
+        if not isinstance(wlan, dict):
+            raise DecoError("Unexpected TMP wlan response: not a JSON object")
+        bands: list[str] = []
+        for band, config in cast("dict[str, Any]", wlan).items():
+            if not band.startswith("band"):
+                continue
+            if not isinstance(config, dict):
+                raise DecoError(
+                    f"Unexpected TMP wlan response: '{band}' is not an object"
+                )
+            guest = cast("dict[str, Any]", config).get("guest", [])
+            if guest == []:  # guest の無い band。空の Lua テーブルは [] で返る
+                continue
+            if not isinstance(guest, dict):
+                raise DecoError(
+                    f"Unexpected TMP wlan response: '{band}.guest' is not an object"
+                )
+            is_separate = cast("dict[str, Any]", guest).get("is_separate", False)
+            if not isinstance(is_separate, bool):
+                raise DecoError(
+                    f"Unexpected TMP wlan response: '{band}.guest.is_separate' is not a boolean"
+                )
+            if not is_separate:
+                bands.append(band)
+        if bands:
+            self.call(
+                _OPCODE_WLAN_WRITE,
+                params={band: {"guest": {"enable": enable}} for band in bands},
+            )
+        return bands
 
     def call(self, opcode: int, *, params: dict[str, Any] | None = None) -> Any:
         """
