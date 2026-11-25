@@ -83,7 +83,8 @@ mise run dev   # PASSWORD と TPLINK_EMAIL を fnox で復号し、uvicorn を -
 - ルーターへのログインは遅延 (最初の API 呼び出し時)。401/403 やログイン画面 (非 JSON)、暗号文の空な
   `{"data": ""}` (Deco の管理画面などほかのクライアントのログインでセッションが無効になったとき) が
   返ったら、自動で再ログインして 1 回だけ再送します。
-- TMP の SSH セッションも最初の `/api/app/...` の呼び出しで張り、使い回します。切れていたら次の呼び出しで張り直します。
+- TMP の SSH セッションも、TMP を使う最初の呼び出し (`/api/app/...` と Wi-Fi の書き込み) で張り、使い回します。
+  切れていたら次の呼び出しで張り直します。
 - luci と TMP のクライアントはセッション状態を持つため、それぞれのリクエストはサーバー側の lock で直列化されます。
 
 ### Docker
@@ -165,7 +166,7 @@ distroless には Python 3.14 のイメージが無いので、ビルダで uv �
 | --------- | ------------------------------------------------------------------------------------------------------------------------- |
 | 400 / 422 | リクエスト検証エラー (`confirm` 無し、未知の `settings` フィールド等)                                                     |
 | 401       | ルーターへのログイン失敗 (`DecoAuthError`。TMP は email かパスワードの不一致)                                             |
-| 413       | `/api/app/...` の `params` が TMP の 1 packet に収まらない                                                                |
+| 413       | `/api/app/...` の `params` や Wi-Fi の書き込みの設定が、TMP の 1 packet に収まらない                                      |
 | 502       | ルーターがエラーや不正な応答を返した (`detail` と `error_code`)。TMP の host key が `TMP_HOST_KEY` と一致しないときも 502 |
 | 504       | ルーターに到達できない (`DecoConnectionError`)                                                                            |
 
@@ -181,11 +182,14 @@ curl -X POST http://127.0.0.1:8000/api/wireless \
 
 `band` は `band2_4` / `band5_1` / `band6`、`network` は `host` / `guest` (enum で検証)。
 
-ゲスト Wi-Fi は band ごとの設定です。`network` が `guest` のときは `band` を省略でき、Deco アプリの
-ゲスト Wi-Fi のスイッチと同じ範囲の band をまとめて切り替えます。対象は、Deco アプリの経路の read
-(`/api/app/wireless/wlan/read`) で guest の `is_separate` が true でない band (BE85 では 2.4 GHz と 5 GHz) です。
-6 GHz のゲストはアプリでも別に設定するもので、未設定のまま有効にするとパスワードの無い (OWE の)
-SSID が出うるので含めません。応答の `updated` に、切り替えた band が入ります。
+ゲスト Wi-Fi は band ごとの設定です。`network` が `guest` のときは `band` を省略でき、guest が別扱いでない
+band のゲストを 1 回の書き込みでまとめて切り替えます。対象は、Deco アプリの経路の read
+(`/api/app/wireless/wlan/read`) で guest の `is_separate` が true でない band で、BE85 では 2.4 GHz と 5 GHz です。
+応答の `updated` に切り替えた band が入り、対象が無ければ 404 です。
+
+6 GHz のゲスト (`is_separate: true`) は、`enable: false` でも止めません。止めるには `band6` を指定して呼びます。
+6 GHz のゲストは Deco アプリでも別に設定するもので、BE85 では未設定のまま暗号化方式が OWE (パスワードの
+無い方式) になっています。`band6` を指定して有効にすると、パスワードの無いゲスト SSID が出るおそれがあります。
 
 ```bash
 # ゲスト Wi-Fi をまとめて止める
@@ -198,6 +202,8 @@ Wi-Fi の書き込み (`/api/wireless`・`/api/wireless/config`) は、Deco ア�
 (`wireless/wlan/write`、opcode `0x4008`) で行います。luci の `admin/wireless?form=wlan` の write は
 guest の書き込みを HTTP 500 で落とすので、`/api/luci/wireless/wlan/write` ではなく
 `/api/app/wireless/wlan/write` を使ってください。読み取り (`GET /api/wireless`) は luci の経路のままです。
+書き込みには TMP の設定 (`TPLINK_EMAIL`・`TMP_HOST_KEY`) が要り、失敗したときの status と、書き込みの直後や
+ルーターが接続を切った直後に 504 になりうることは、`/api/app/...` と同じです (後述)。
 
 ### Wi-Fi 詳細設定の変更 `/api/wireless/config`
 
@@ -298,9 +304,9 @@ IPTV の接続設定やポートの媒体・動作モード・メインノード
   ルーターにアップロード済みであることを前提にします。この API はファイルを送れないので、OpenVPN は
   Deco アプリで設定してください。
 - TMP の write の後、ルーターは設定を反映する間 TMP の port を閉じることがあります。
-  その間の `/api/app/...` は 504 になります。ルーターがセッションを切った直後の要求も、送った後に切断を
+  その間の `/api/app/...` と Wi-Fi の書き込みは 504 になります。ルーターがセッションを切った直後の要求も、送った後に切断を
   知るので 504 になることがあり、その要求は再送しません (次の要求で接続し直します)。
-- TMP の要求は 1 つの packet (本文は約 64 KiB まで) で送るので、それを超える `params` は 413 です。
+- TMP の要求は 1 つの packet (本文は約 64 KiB まで) で送るので、それを超える `params` (Wi-Fi の書き込みでは設定) は 413 です。
 - 応答はルーターが保存している値をそのまま返します。Wi-Fi・PPPoE・VPN (WireGuard の鍵を含む)・ゲストの
   ポータルなどのパスワードや鍵も含みうるので、API を公開する範囲に注意してください。
 - 一覧に含めないもの: ログイン前の手順、mesh のノード間の処理、debug 用の opcode、multipart やファイルの
@@ -627,8 +633,9 @@ LED・`upnp`・QoS・HomeShield・Wi-Fi など。分割された応答を含む)
 実機の write では、次を確かめています。
 
 - TMP の `wireless/wlan/write` で guest の `enable` を切り替えると反映される (band ごと・複数 band の同時)。
-- 同じ opcode で、host の `enable`・guest の `host_isolation` と `bandwidth_limit`・radio の `channel` を、
-  今の値のまま書くと受け付けられる。
+- 同じ opcode で次の項目を今の値のまま書くと、受け付けられて値が保たれる: host の `enable`・`enable_hide_ssid`、
+  guest の `ssid`・`encryption_mode`・`enable_wpa3`・`host_isolation`・`access_duration`・`bandwidth_limit`
+  (`enable` と上限)、radio の `channel`・`htmode`・`hwmode`。値を変えたときの反映は確かめていない。
 - luci の `wireless?form=beamforming`・`ieee80211r` の write は、今の値のまま書くと受け付けられる。
 - luci の `wireless?form=wlan` の write は、guest の書き込みを HTTP 500 で落とす。
 

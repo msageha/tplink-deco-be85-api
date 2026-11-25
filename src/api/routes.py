@@ -208,16 +208,24 @@ async def wireless_get(service: Service) -> dict[str, Any]:
     return await service.run(service.client.get_wlan)
 
 
-@router.post("/wireless", tags=["wireless"])
+@router.post(
+    "/wireless",
+    tags=["wireless"],
+    responses={404: {"description": "band の省略時に、まとめて切り替えるゲストが無い"}},
+)
 async def wireless_toggle(*, body: WlanBandToggle, tmp: TmpService) -> dict[str, Any]:
     """
     band 単位で Wi-Fi を ON / OFF する。接続中のクライアントは一時的に切断される。
 
-    guest で band を省略すると、Deco アプリのゲスト Wi-Fi のスイッチと同じ範囲の band を切り替える。
+    guest で band を省略すると、guest が別扱い (6 GHz など) でない band をまとめて切り替える。
     """
     settings = {"enable": body.enable}
     if body.band is None:
         bands = await tmp.run(tmp.client.set_guest_enable, enable=body.enable)
+        if not bands:
+            raise HTTPException(
+                status_code=404, detail="No guest network found to toggle"
+            )
         return {"updated": {band: {body.network: settings} for band in bands}}
     await tmp.run(
         tmp.client.set_wlan, band=body.band, network=body.network, settings=settings
@@ -230,7 +238,8 @@ async def wireless_config(
     *, body: WirelessConfigUpdate, tmp: TmpService
 ) -> dict[str, Any]:
     """
-    band と network の組 1 つ分の Wi-Fi 設定 (SSID / パスワード / channel など) を変更する。
+    band の 1 つの network の Wi-Fi 設定 (SSID / パスワード など) と、band の radio の設定
+    (channel など。network によらず band 全体に効く) を変更する。
 
     ssid / password は平文で受け取り、サーバー側で base64 化してルーターへ送る。
     接続中のクライアントは一時的に切断される。

@@ -189,8 +189,8 @@ class WlanBandToggle(_Request):
     band: WifiBand | None = Field(
         default=None,
         description=(
-            "対象バンド。network が guest のときだけ省略でき、省略すると Deco アプリのゲスト Wi-Fi の"
-            "スイッチと同じく、別扱い (6 GHz など) でない band のゲストをまとめて切り替える"
+            "対象バンド。network が guest のときだけ省略でき、省略すると guest が別扱い"
+            " (BE85 の 6 GHz) でない band のゲストをまとめて切り替える"
         ),
     )
     network: WifiNetwork = Field(
@@ -213,10 +213,12 @@ class GuestBandwidthLimit(BaseModel):
     enable: bool | None = Field(default=None, description="帯域を制限するか")
     downstream_bandwidth: int | None = Field(
         default=None,
+        ge=0,
         description="下りの上限。`POST /api/app/wireless/wlan/read` の値と同じ単位",
     )
     upstream_bandwidth: int | None = Field(
         default=None,
+        ge=0,
         description="上りの上限。`POST /api/app/wireless/wlan/read` の値と同じ単位",
     )
 
@@ -263,6 +265,7 @@ class WirelessSettings(BaseModel):
     )
     access_duration: int | None = Field(
         default=None,
+        ge=-1,
         description=(
             "ゲスト Wi-Fi を有効にしておく期間。-1 は無期限、ほかの値は "
             "`POST /api/app/wireless/wlan/read` の値と同じ単位 (guest のみ)"
@@ -284,7 +287,7 @@ class WirelessConfigUpdate(_Request):
     settings: WirelessSettings = Field(description="変更するフィールド (1 つ以上)")
 
     @model_validator(mode="after")
-    def _require_a_setting(self) -> Self:
+    def _validate_settings(self) -> Self:
         given = self.settings.model_dump(exclude_none=True)
         if not given:
             raise ValueError("settings must include at least one field to update")

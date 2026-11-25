@@ -446,7 +446,7 @@ class TmpClient:
 
     def set_wlan(self, *, band: str, network: str, settings: dict[str, Any]) -> Any:
         """
-        band と network (host / guest) の組 1 つ分の Wi-Fi 設定を書き込む。
+        band の 1 つの network (host / guest) の Wi-Fi 設定と、その band の radio の設定を書き込む。
 
         luci の `admin/wireless?form=wlan` の write は guest の書き込みを HTTP 500 で落とすので、
         Deco アプリと同じ TMP の経路で書く。settings の名前は luci の read の形 (`GET /api/wireless`)
@@ -478,31 +478,47 @@ class TmpClient:
 
     def set_guest_enable(self, *, enable: bool) -> list[str]:
         """
-        Deco アプリのゲスト Wi-Fi のスイッチと同じ範囲の band のゲストを、まとめて切り替える。
+        guest が別扱い (`is_separate`) でない band のゲストを、1 回の write でまとめて切り替える。
 
-        guest の `is_separate` が true の band (BE85 の 6 GHz) は、アプリでも別に設定する
-        ゲストなので切り替えない。未設定のままでもパスワードの無い OWE の設定を持ちうるので、
-        ここで有効にするとパスワードの無いゲスト SSID が出るため。切り替えた band を返す。
+        `is_separate` が true の guest (BE85 の 6 GHz) は Deco アプリでも別に設定するゲストで、
+        未設定のままでもパスワードの無い OWE の設定を持ちうるので、ここでは切り替えない。
+        `is_separate` を持たない guest は別扱いでないとみなす (BE85 の 2.4 / 5 GHz は持たない)。
+        切り替えた band を返し、対象が無ければ書き込まずに空のリストを返す。
 
         Raises:
-            DecoError: 切り替える band が無い、または wlan の read の応答が不正。
+            DecoError: wlan の read の応答が不正。一部の band だけを切り替えて成功を返さないよう、
+                書き込む前に止める。
         """
         wlan = self.call(_OPCODE_WLAN_READ)
         if not isinstance(wlan, dict):
             raise DecoError("Unexpected TMP wlan response: not a JSON object")
-        bands = [
-            band
-            for band, config in cast("dict[str, Any]", wlan).items()
-            if isinstance(config, dict)
-            and isinstance(guest := cast("dict[str, Any]", config).get("guest"), dict)
-            and cast("dict[str, Any]", guest).get("is_separate") is not True
-        ]
-        if not bands:
-            raise DecoError("Deco reported no guest network to toggle")
-        self.call(
-            _OPCODE_WLAN_WRITE,
-            params={band: {"guest": {"enable": enable}} for band in bands},
-        )
+        bands: list[str] = []
+        for band, config in cast("dict[str, Any]", wlan).items():
+            if not band.startswith("band"):
+                continue
+            if not isinstance(config, dict):
+                raise DecoError(
+                    f"Unexpected TMP wlan response: '{band}' is not an object"
+                )
+            guest = cast("dict[str, Any]", config).get("guest", [])
+            if guest == []:  # guest の無い band。空の Lua テーブルは [] で返る
+                continue
+            if not isinstance(guest, dict):
+                raise DecoError(
+                    f"Unexpected TMP wlan response: '{band}.guest' is not an object"
+                )
+            is_separate = cast("dict[str, Any]", guest).get("is_separate", False)
+            if not isinstance(is_separate, bool):
+                raise DecoError(
+                    f"Unexpected TMP wlan response: '{band}.guest.is_separate' is not a boolean"
+                )
+            if not is_separate:
+                bands.append(band)
+        if bands:
+            self.call(
+                _OPCODE_WLAN_WRITE,
+                params={band: {"guest": {"enable": enable}} for band in bands},
+            )
         return bands
 
     def call(self, opcode: int, *, params: dict[str, Any] | None = None) -> Any:
