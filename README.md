@@ -279,7 +279,11 @@ curl -X POST http://127.0.0.1:8000/api/raw \
 
 本文の `params` はルーターへそのまま渡し (省略可)、成功応答の本体 (`result` / `data`) を返します。ルーターがエラーを
 返したら 502 です。各 endpoint の OpenAPI には、呼ぶ form (`x-deco-luci-path`) か opcode (`x-deco-tmp-opcode`)、
-operation (`x-deco-operation`)、破壊的操作か (`x-deco-destructive`) を載せています。
+operation (`x-deco-operation`)、破壊的操作か (`x-deco-destructive`)、ルーターの設定を変えず、診断・スキャン・
+初期設定などの処理も始めずに値を返す操作か (`x-deco-read-only`) を載せています。`x-deco-read-only` は form と
+operation の名前から判断した値で、ファームウェアの処理は確かめていません。false には、設定を変える操作と、名前から
+副作用が無いと言い切れない操作の両方が含まれます。2 つが同時に true になることはなく、`confirm: true` を求めるかは
+`x-deco-destructive` だけで決まります。
 
 ```bash
 # DHCP の予約の一覧 (luci)

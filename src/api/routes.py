@@ -27,6 +27,7 @@ from deco import (
     TMP_OPERATIONS,
     DecoClient,
     DecoError,
+    Effect,
     LuciOperation,
     TmpClient,
     TmpOperation,
@@ -448,19 +449,21 @@ def _add_luci_route(entry: LuciOperation) -> None:
         _require_confirm(body)
         return await call(body=body, service=service)
 
+    destructive = entry.effect is Effect.DESTRUCTIVE
     module = entry.module.removeprefix("admin/")
     router.add_api_route(
         f"/luci/{module}/{entry.form}/{entry.operation}",
-        call_destructive if entry.destructive else call,
+        call_destructive if destructive else call,
         methods=["POST"],
         name=f"luci_{module}_{entry.form}_{entry.operation}",
         summary=f"{entry.path} の {entry.operation}",
         tags=[f"luci: {module}"],
-        responses=_CONFIRM_RESPONSES if entry.destructive else None,
+        responses=_CONFIRM_RESPONSES if destructive else None,
         openapi_extra={
             "x-deco-luci-path": entry.path,
             "x-deco-operation": entry.operation,
-            "x-deco-destructive": entry.destructive,
+            "x-deco-destructive": destructive,
+            "x-deco-read-only": entry.effect is Effect.READ_ONLY,
         },
     )
 
@@ -478,18 +481,20 @@ def _add_tmp_route(entry: TmpOperation) -> None:
         _require_confirm(body)
         return await call(body=body, tmp=tmp)
 
+    destructive = entry.effect is Effect.DESTRUCTIVE
     router.add_api_route(
         f"/app/{entry.controller}/{entry.form}/{entry.operation}",
-        call_destructive if entry.destructive else call,
+        call_destructive if destructive else call,
         methods=["POST"],
         name=f"app_{entry.controller}_{entry.form}_{entry.operation}",
         summary=f"opcode {entry.opcode:#06x} ({entry.form} の {entry.operation})",
         tags=[f"app: {entry.controller}"],
-        responses=_TMP_RESPONSES | (_CONFIRM_RESPONSES if entry.destructive else {}),
+        responses=_TMP_RESPONSES | (_CONFIRM_RESPONSES if destructive else {}),
         openapi_extra={
             "x-deco-tmp-opcode": entry.opcode,
             "x-deco-operation": entry.operation,
-            "x-deco-destructive": entry.destructive,
+            "x-deco-destructive": destructive,
+            "x-deco-read-only": entry.effect is Effect.READ_ONLY,
         },
     )
 
