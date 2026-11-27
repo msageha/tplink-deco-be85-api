@@ -461,6 +461,7 @@ def _add_luci_route(entry: LuciOperation) -> None:
             "x-deco-luci-path": entry.path,
             "x-deco-operation": entry.operation,
             "x-deco-destructive": entry.destructive,
+            "x-deco-read-only": entry.read_only,
         },
     )
 
@@ -490,6 +491,7 @@ def _add_tmp_route(entry: TmpOperation) -> None:
             "x-deco-tmp-opcode": entry.opcode,
             "x-deco-operation": entry.operation,
             "x-deco-destructive": entry.destructive,
+            "x-deco-read-only": entry.read_only,
         },
     )
 
